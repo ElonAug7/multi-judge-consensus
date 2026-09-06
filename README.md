@@ -66,6 +66,9 @@ History is appended to `logs/bench-history.jsonl` for regression tracking.
 
 ## Getting started
 
+> Step-by-step walkthrough for first-time users (key setup, first review, web console,
+> agent integrations, cost table, troubleshooting): **[QUICKSTART.md](QUICKSTART.md)**
+
 ```bash
 git clone https://github.com/ElonAug7/multi-judge-consensus.git
 cd multi-judge-consensus
