@@ -15,6 +15,10 @@ from mjc import settings as S
 
 
 def run():
+    from mjc import providers
+    if not providers.has_key("glm"):
+        print("== screen toggle 跳过（无 glm key，CI/新环境）==")
+        return 0
     real = S.PATH
     tmp = tempfile.mkdtemp()
     S.PATH = os.path.join(tmp, "settings.json")

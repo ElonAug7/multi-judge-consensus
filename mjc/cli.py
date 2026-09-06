@@ -42,7 +42,9 @@ def cmd_doctor(args=None):
     for p in providers.available_providers():
         print(f"  {p}: 模型 {providers.MODELS[p]} — key 就绪 ✓")
     if not providers.available_providers():
-        print("⚠️ 无可用 key！检查 keys.local.json 或 MJC_*_KEY 环境变量")
+        print("⚠️ 无可用 key！两步开始：")
+        print("   1) python3 -m mjc.cli setup   # 交互式录入（deepseek/智谱都有免费额度）")
+        print("   2) 或用环境变量 MJC_DEEPSEEK_KEY=sk-... MJC_GLM_KEY=... python3 -m mjc.cli webui")
     try:
         from mjc import settings
         st = settings.admin_state()
@@ -275,6 +277,42 @@ def cmd_bench(args):
     return 0
 
 
+def cmd_setup(args):
+    """首次配置向导：交互式录入厂商 key → 写 keys.local.json(600) → 逐个探测连通 → 出 doctor 摘要。
+    用法：python3 -m mjc.cli setup   （每项可回车跳过；至少一家可用即可跑，两家更佳）"""
+    import json as _json
+    from mjc import settings, providers
+    print("🦉 MJC 首次配置向导（key 只存本机 keys.local.json，600 权限，不入库）")
+    print("支持厂商: " + ", ".join(f"{n}({m['label']})" for n, m in settings.DEFAULT_PROVIDERS.items()))
+    print("没有 key 可去各厂商开放平台申请：deepseek 与智谱 glm 均有免费额度\n")
+    keys = {}
+    for name in ("deepseek", "glm", "qwen", "dashscope", "doubao", "kimi"):
+        meta = settings.DEFAULT_PROVIDERS.get(name, {})
+        try:
+            v = input(f"  {meta.get('label', name)} key（回车跳过）: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            break
+        if v:
+            keys[name] = v
+    if not keys:
+        print("\n未录入任何 key。仍可试用：本地离线测试（tests/）与 WebUI 界面；审查需至少 1 个 key。")
+        return 0
+    for name, k in keys.items():
+        try:
+            settings.set_key(name, k)
+        except Exception as e:
+            print(f"  ⚠️ {name} 保存失败: {e}")
+    print("\n保存完成，开始连通探测（每家 1 次极小调用）…")
+    for name in keys:
+        r = settings.probe(name)
+        print(f"  {'✅' if r.get('ok') else '❌'} {name}: {r.get('detail', '')[:90]}"
+              + (f"\n    提示: {r['hint']}" if not r.get('ok') and r.get('hint') else ""))
+    providers.reload_keys()
+    print("\n下一步：python3 -m mjc.cli doctor 体检 · python3 -m mjc.cli webui 开管理台")
+    return 0
+
+
 def cmd_gate(args):
     """阶段闸门（P1 实时）：设计/写码/交付检查点审查。
     事件写 live 流（WebUI 实时动画）；裁决 pass→0 / revise→2 / reject·need_human→3 / 错误→1。
@@ -396,6 +434,9 @@ def main():
     p_bench.add_argument("--compare", action="store_true", help="每条缺陷样本同时跑单模型(glm-4-plus)对照票")
     p_bench.add_argument("--json", action="store_true")
     p_bench.set_defaults(fn=cmd_bench)
+
+    p_setup = sub.add_parser("setup", help="首次配置向导：录入 API key → 探测连通 → 可跑")
+    p_setup.set_defaults(fn=cmd_setup)
 
     p_gate = sub.add_parser("gate", help="阶段闸门：设计/写码/交付检查点审查（实时事件流）——非 pass 退出码阻断")
     p_gate.add_argument("--stage", required=True, choices=["design", "code", "deliver"])

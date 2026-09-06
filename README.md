@@ -29,22 +29,22 @@ pro 档全流程（验证器 → 初筛 → 4 委员 → 辩论 ≤2 轮）：
 ## 快速开始
 
 ```bash
-cd multi-judge-consensus
-# 1. 放好 key：keys.local.json（600 权限）或环境变量 MJC_DEEPSEEK_KEY / MJC_GLM_KEY
-# 2. 检查
-python3 -m mjc.cli doctor
+# 下载即用三步（零依赖，Python ≥3.9 即可，无需 pip install 任何包）
+git clone <repo-url> && cd multi-judge-consensus
+python3 -m mjc.cli setup          # ① 向导录入 API key（deepseek/智谱有免费额度；可回车跳过）
+python3 -m mjc.cli webui          # ② 打开本地管理台 http://127.0.0.1:8123
+# ③ 审查一段输出（初筛 → 委员会 → 辩论，全自动）
+python3 -m mjc.cli judge-only --task "查明天北京的天气并写提醒" --output "明天北京有特大暴雨，请带伞"
 
-# 3. 审查一段输出（三 Judge 委员会，默认池）
-python3 -m mjc.cli judge-only \
-  --task "查明天北京的天气并写提醒" \
-  --output "明天北京有特大暴雨，请带伞"
-
-# 4. 完整 review：Agent 生成 → 初筛/委员会审查 → 打回重写（最多 3 次）
-python3 -m mjc.cli review --task "写一封请假邮件"
-
-# 5.（Phase 3）本地 Web 界面：仅回环 127.0.0.1:8123
-python3 -m mjc.cli webui
+# 其他入口
+python3 -m mjc.cli doctor         # 体检（key/档位/信任分/缓存/累计用量）
+python3 -m mjc.cli review --task "写一封请假邮件"   # 生成→审查→打回循环
+python3 -m mjc.cli bench --set quick               # 跑红队基准（真 API，≈¥0.2）
+python3 -m mjc.cli setup                           # 重跑向导可增删 key
 ```
+
+> 没配 key 也能玩：界面/离线测试/文档全可用；key 配 1 家即可跑（委员会自动按可用厂商收缩），
+> 配 2 家以上效果最佳（跨厂商盲区互补是核心设计）。key 只存本机 keys.local.json（600）或环境变量。
 
 ## 架构
 
