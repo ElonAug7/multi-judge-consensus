@@ -66,9 +66,12 @@ def run():
                           "params": {"name": "hack", "arguments": {}}})
     check("未知工具 → -32602", r["error"]["code"] == -32602)
 
-    # 7) 成功路径（monkeypatch pipeline，零 API）
-    old_pipe = M.pipeline
+    # 7) 成功路径（monkeypatch pipeline + settings + build_pool，零 API、无 key 环境可用）
+    old_pipe, old_st, old_bp = M.pipeline, M.settings, M.build_pool
     M.pipeline = _FakePipeline()
+    M.settings = type("S", (), {"effective": lambda self: {"committee": ["a:m1", "b:m2"],
+                                                      "screen_model": "a:m1", "screen_enabled": True}})()
+    M.build_pool = lambda specs: [type("J", (), {"name": s})() for s in specs]
     try:
         r = M.handle_message({"jsonrpc": "2.0", "id": 6, "method": "tools/call",
                               "params": {"name": "review",
@@ -78,7 +81,7 @@ def run():
         check("review 成功返回裁决 JSON", d["verdict"] == "revise" and d["api_calls"] == 0)
         check("issues 含验算命中", any(i["type"] == "factual_error" for i in d["issues"]))
     finally:
-        M.pipeline = old_pipe
+        M.pipeline, M.settings, M.build_pool = old_pipe, old_st, old_bp
 
     # 8) 坏 JSON
     check("坏 JSON → Parse error", M.handle_message("not json").get("error", {}).get("code") == -32700)
