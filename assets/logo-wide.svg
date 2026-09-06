@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 560 128" width="560" height="128">
+<rect width="128" height="128" rx="28" fill="url(#gw)"/>
+<defs><linearGradient id="gw" x1="0" y1="0" x2="1" y2="1">
+<stop offset="0" stop-color="#0a84ff"/><stop offset="1" stop-color="#5e5ce6"/></linearGradient></defs>
+<circle cx="54" cy="48" r="27" fill="#fff" fill-opacity="0.35"/>
+<circle cx="74" cy="48" r="27" fill="#fff" fill-opacity="0.35"/>
+<circle cx="64" cy="76" r="27" fill="#fff" fill-opacity="0.55"/>
+<path d="M44 66 L59 82 L86 51" fill="none" stroke="#fff" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="152" y="62" font-family="-apple-system,Segoe UI,DejaVu Sans,sans-serif" font-size="30" font-weight="700" fill="#1d1d1f">Multi-Judge Consensus</text>
+<text x="152" y="92" font-family="-apple-system,Segoe UI,DejaVu Sans,sans-serif" font-size="15" fill="#86868b">MJC · cross-vendor LLM review committee</text>
+</svg>

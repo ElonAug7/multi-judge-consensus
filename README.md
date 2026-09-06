@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/logo-wide.svg" alt="Multi-Judge Consensus" width="560"/>
+</p>
+
 # Multi-Judge Consensus (MJC)
 
 **A cross-vendor model committee that reviews agent-generated content before it ships.**
