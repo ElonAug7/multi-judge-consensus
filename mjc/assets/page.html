@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="zh"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>MJC · Multi-Judge Consensus</title>
+<style>
+:root{
+  --bg:#f2f2f7; --ink:#1d1d1f; --ink2:#3a3a3c; --mut:#86868b;
+  --hair:rgba(0,0,0,.07); --blue:#0071e3; --green:#248a3d; --red:#d70015; --orange:#b25000; --purple:#8944ab;
+  --r:20px; --r-s:12px;
+  --glass:rgba(255,255,255,.62);
+  --glass-strong:rgba(255,255,255,.78);
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","Helvetica Neue","PingFang SC","Microsoft YaHei",sans-serif;
+  background:var(--bg);color:var(--ink);font-size:15px;line-height:1.55;-webkit-font-smoothing:antialiased;
+  background-image:radial-gradient(1200px 500px at 15% -8%,rgba(10,132,255,.10),transparent 60%),
+    radial-gradient(900px 420px at 90% -4%,rgba(94,92,230,.08),transparent 55%);
+  background-attachment:fixed}
+/* ---- 毛玻璃导航 ---- */
+.nav{position:sticky;top:0;z-index:60;display:flex;align-items:center;gap:1.1rem;flex-wrap:wrap;padding:.7rem 1.5rem;
+  background:rgba(255,255,255,.55);backdrop-filter:blur(28px) saturate(190%);-webkit-backdrop-filter:blur(28px) saturate(190%);
+  border-bottom:.5px solid rgba(0,0,0,.08);box-shadow:0 1px 12px rgba(0,0,0,.04)}
+.brand{display:flex;align-items:center;gap:.5rem;font-weight:650;font-size:16px;letter-spacing:-.01em}
+.brand .dot{width:27px;height:27px;border-radius:50%;background:linear-gradient(135deg,#0a84ff,#5e5ce6);display:inline-flex;
+  align-items:center;justify-content:center;font-size:14px;color:#fff;box-shadow:0 2px 10px rgba(10,132,255,.4)}
+.seg{display:flex;background:rgba(120,120,128,.16);border-radius:11px;padding:3px;gap:2px;backdrop-filter:blur(10px)}
+.seg button{border:0;background:transparent;color:var(--ink2);font-size:13.5px;font-weight:550;padding:.4rem 1rem;border-radius:9px;
+  cursor:pointer;transition:all .18s ease;display:flex;gap:.35rem;align-items:center}
+.seg button.on{background:rgba(255,255,255,.92);color:var(--ink);box-shadow:0 1px 5px rgba(0,0,0,.12),0 .5px 1px rgba(0,0,0,.05)}
+.seg button:hover:not(.on){color:var(--ink)}
+.live-dot{width:7px;height:7px;border-radius:50%;background:#34c759;display:none}
+.live-dot.on{display:inline-block;animation:pulse 1.4s infinite}
+main{max-width:1080px;margin:0 auto;padding:1.6rem 1.2rem 3rem}
+.errbar{display:none;background:rgba(255,59,48,.1);color:var(--red);border:.5px solid rgba(215,0,21,.22);
+  border-radius:var(--r-s);padding:.6rem .95rem;font-size:13px;margin-bottom:1rem;backdrop-filter:blur(12px)}
+/* ---- 玻璃卡片 ---- */
+.card{background:var(--glass);border-radius:var(--r);padding:1.25rem 1.45rem;margin:.95rem 0;
+  border:.5px solid rgba(255,255,255,.75);box-shadow:0 0 0 .5px rgba(0,0,0,.04),0 2px 6px rgba(0,0,0,.04),0 18px 44px rgba(0,0,0,.07);
+  backdrop-filter:blur(22px) saturate(170%);-webkit-backdrop-filter:blur(22px) saturate(170%)}
+.card.flat{background:var(--glass-strong)}
+h3{font-size:15px;font-weight:640;margin:0 0 .45rem;letter-spacing:-.01em}
+.muted{color:var(--mut);font-size:12.5px}
+.tiny{font-family:ui-monospace,"SF Mono",Menlo,monospace;font-size:11.5px;color:var(--mut);word-break:break-all}
+label{font-size:13px;color:var(--ink2)}
+textarea,input[type=text],input[type=password],input[type=number],select{
+  width:100%;background:rgba(255,255,255,.72);border:.5px solid rgba(0,0,0,.07);border-radius:var(--r-s);
+  padding:.55rem .7rem;font:inherit;font-size:14px;color:var(--ink);outline:none;transition:all .15s;backdrop-filter:blur(8px)}
+textarea:focus,input:focus,select:focus{border-color:var(--blue);background:#fff;box-shadow:0 0 0 3px rgba(0,113,227,.13)}
+textarea{font-family:ui-monospace,"SF Mono",Menlo,monospace;font-size:13px;line-height:1.55;resize:vertical}
+.btn{border:0;border-radius:980px;padding:.5rem 1.3rem;font-size:14px;font-weight:550;cursor:pointer;background:var(--blue);
+  color:#fff;transition:all .18s;box-shadow:0 1px 4px rgba(0,0,0,.12)}
+.btn:hover{filter:brightness(1.08)} .btn:active{transform:scale(.975)} .btn:disabled{opacity:.45;cursor:default}
+.btn.sec{background:rgba(120,120,128,.16);color:var(--ink);box-shadow:none;backdrop-filter:blur(8px)}
+.btn.danger{background:rgba(255,59,48,.12);color:var(--red);box-shadow:none}
+.btn.ghost{border:.5px solid rgba(0,113,227,.3);background:rgba(255,255,255,.4);color:var(--blue);box-shadow:none;font-size:13px}
+.sw{display:inline-flex;align-items:center;gap:.45rem;cursor:pointer;user-select:none}
+.sw input{position:absolute;opacity:0;width:0;height:0}
+.sw .track{position:relative;width:42px;height:25px;border-radius:13px;background:rgba(120,120,128,.25);transition:background .2s;flex:none}
+.sw .track:after{content:'';position:absolute;top:2px;left:2px;width:21px;height:21px;border-radius:50%;background:#fff;
+  box-shadow:0 1px 4px rgba(0,0,0,.28);transition:left .2s}
+.sw input:checked + .track{background:#34c759}
+.sw input:checked + .track:after{left:19px}
+.badge{display:inline-block;padding:.12rem .6rem;border-radius:999px;font-size:11px;font-weight:650;letter-spacing:.01em;backdrop-filter:blur(4px)}
+.ok{background:rgba(52,199,89,.16);color:var(--green)} .bad{background:rgba(255,59,48,.13);color:var(--red)}
+.warn{background:rgba(255,149,0,.18);color:var(--orange)} .idle{background:rgba(120,120,128,.16);color:var(--gray,#6e6e73)}
+.tag-cabbage{background:rgba(52,199,89,.16);color:var(--green)}
+.tag-mid{background:rgba(255,149,0,.18);color:var(--orange)}
+.tag-top{background:rgba(175,82,222,.15);color:var(--purple)}
+.tag-unknown{background:rgba(120,120,128,.16);color:var(--mut)}
+.row{display:flex;gap:.7rem;flex-wrap:wrap;align-items:center}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:1rem}
+@media(max-width:840px){.grid2{grid-template-columns:1fr}}
+.kv{display:flex;gap:.5rem;align-items:center;flex-wrap:wrap;margin:.4rem 0}
+.kv b{min-width:96px;color:var(--ink2);font-weight:550;font-size:13px}
+pre{white-space:pre-wrap;background:rgba(245,245,247,.85);border-radius:var(--r-s);padding:.7rem;font-size:12px;font-family:ui-monospace,Menlo,monospace}
+.tier-card{border:.5px solid rgba(0,0,0,.07);background:rgba(255,255,255,.66);border-radius:var(--r-s);padding:.9rem 1rem;
+  cursor:pointer;flex:1;min-width:215px;transition:all .18s;box-shadow:0 1px 3px rgba(0,0,0,.04);backdrop-filter:blur(10px)}
+.tier-card:hover{border-color:rgba(0,113,227,.45)}
+.tier-card.sel{border-color:var(--blue);box-shadow:0 0 0 3px rgba(0,113,227,.13)}
+.key-card{border:.5px solid rgba(0,0,0,.07);border-radius:var(--r-s);padding:.8rem .95rem;margin:.5rem 0;background:rgba(255,255,255,.6);backdrop-filter:blur(8px)}
+.mrow{display:flex;align-items:center;gap:.6rem;padding:.45rem .65rem;border:.5px solid rgba(0,0,0,.07);border-radius:var(--r-s);
+  margin:.3rem 0;cursor:pointer;background:rgba(255,255,255,.55);transition:all .15s}
+.mrow.sel{border-color:var(--blue);background:rgba(0,113,227,.09)}
+.mrow input[type=checkbox]{accent-color:var(--blue);width:16px;height:16px;flex:none}
+.mrow input[type=checkbox]:disabled{opacity:.35}
+/* ---- 实时任务：列表 + 详情 ---- */
+.task-layout{display:grid;grid-template-columns:280px 1fr;gap:1rem;align-items:start}
+@media(max-width:840px){.task-layout{grid-template-columns:1fr}}
+#task-list .tsk{display:flex;flex-direction:column;gap:.2rem;padding:.7rem .85rem;border-radius:var(--r-s);cursor:pointer;
+  border:.5px solid transparent;transition:all .15s;margin:.25rem 0}
+#task-list .tsk:hover{background:rgba(0,0,0,.035)}
+#task-list .tsk.sel{background:rgba(0,113,227,.09);border-color:rgba(0,113,227,.3)}
+#task-list .tsk .t1{display:flex;align-items:center;gap:.4rem;font-size:13px;font-weight:600}
+#task-list .tsk .t2{font-size:11.5px;color:var(--mut)}
+.ph{display:flex;gap:.5rem;flex-wrap:wrap;align-items:center;margin:.3rem 0 .6rem}
+.ph .phn{font-weight:650;font-size:13px;display:flex;align-items:center;gap:.4rem}
+.jrow{display:flex;gap:.6rem;padding:.55rem .7rem;border-radius:var(--r-s);margin:.35rem 0;background:rgba(255,255,255,.5);
+  border:.5px solid rgba(0,0,0,.05);align-items:flex-start}
+.jrow.fresh{animation:hl 1.6s ease}
+.jrow .who{font-weight:600;font-size:13px;min-width:150px;display:flex;flex-direction:column}
+.jrow .who .role{font-size:10.5px;font-weight:500;color:var(--mut)}
+.iss{font-size:12.5px;color:var(--ink2);margin-top:.15rem;line-height:1.5}
+.iss b{color:var(--ink)}
+.verdict-big{display:flex;align-items:center;gap:.6rem;font-size:15px;font-weight:650}
+.empty-hint{color:var(--mut);font-size:13px;text-align:center;padding:2.4rem 1rem}
+@keyframes hl{0%{background:rgba(0,113,227,.16)}100%{background:rgba(255,255,255,.5)}}
+@keyframes pulse{0%,100%{opacity:.35}50%{opacity:1}}
+</style></head><body>
+<header class="nav">
+  <div class="brand"><span class="dot">🦞</span> Multi-Judge <span class="muted" style="font-weight:400">Consensus</span></div>
+  <div class="seg">
+    <button id="tb-review" class="on" onclick="tab('review')">🧪 审查台</button>
+    <button id="tb-tasks" onclick="tab('tasks')">🛰️ 实时任务<span class="live-dot" id="live-dot"></span></button>
+    <button id="tb-admin" onclick="tab('admin')">⚙️ 后台管理</button>
+  </div>
+</header>
+<main>
+  <div class="errbar" id="errbar"></div>
+  <div class="muted" id="ver" style="margin-bottom:.5rem"></div>
+
+  <section id="pg-review">
+    <div class="card">
+      <h3>原始任务</h3>
+      <textarea id="task" rows="2" placeholder="Agent 被要求完成的任务…"></textarea>
+      <h3 style="margin-top:.9rem">Agent 输出（待审查内容）</h3>
+      <textarea id="output" rows="9" placeholder="粘贴 Agent 的产出…"></textarea>
+      <div class="row" style="margin-top:.9rem">
+        <label class="sw"><input type="checkbox" id="screen" checked><span class="track"></span>初筛</label>
+        <label class="sw"><input type="checkbox" id="degrade"><span class="track"></span>信任降级</label>
+        <label class="sw"><input type="checkbox" id="nocache"><span class="track"></span>关缓存</label>
+        <span class="muted" id="tier-note"></span>
+      </div>
+      <div class="row" style="margin-top:1rem">
+        <button class="btn" id="btn" onclick="run()">开始审查</button>
+        <span id="busy" class="muted"></span>
+      </div>
+    </div>
+    <div id="out"></div>
+  </section>
+
+  <section id="pg-tasks" style="display:none">
+    <div class="card flat">
+      <h3>🛰️ 实时任务 <span class="muted" style="font-weight:400">—— 每个任务独立成卡，按阶段阅读：初筛 → 第 1 轮 → 辩论 → 裁决 → 主 Agent 处置</span></h3>
+    </div>
+    <div class="task-layout">
+      <div class="card flat" style="margin:0">
+        <div class="muted" style="margin-bottom:.4rem">任务列表（点选查看）</div>
+        <div id="task-list"></div>
+      </div>
+      <div class="card flat" style="margin:0" id="task-detail-card">
+        <div id="task-detail"><div class="empty-hint">👈 选一个任务，或等审查发生 —— 每条事件到达都会实时刷新在这里<br><br>💡 编码任务跑 <b>gate 闸门</b>（design/code/deliver 检查点）时，过程最完整</div></div>
+      </div>
+    </div>
+  </section>
+
+  <section id="pg-admin" style="display:none">
+    <div class="card flat"><h3>🎚️ 档位（一键切换委员会与成本策略）</h3>
+      <div class="row" id="tiers"></div>
+    </div>
+    <div class="grid2">
+      <div class="card flat"><h3>🔑 API Keys</h3><div id="keys"></div></div>
+      <div class="card flat"><h3>🧠 委员会模型（勾选 = 委员）</h3><div id="models"></div>
+        <div class="kv"><b>初筛模型</b><select id="screen-model" style="max-width:280px"></select>
+          <label class="sw"><input type="checkbox" id="screen-en"><span class="track"></span>启用</label></div>
+        <div class="kv"><b>初筛阈值</b><input type="number" id="screen-conf" min="0.5" max="1" step="0.05" style="width:5.5rem">
+          <span class="muted">pass 且 ≥此值免委员会</span></div>
+        <div class="kv"><b>降级</b><label class="sw"><input type="checkbox" id="cfg-degrade"><span class="track"></span>连续一致≥5 次降频</label></div>
+        <div class="kv"><b>缓存</b><label class="sw"><input type="checkbox" id="cfg-cache"><span class="track"></span>同内容重跑 0 API</label></div>
+        <div class="row"><button class="btn" onclick="applyCfg()">保存配置</button><span id="cfg-msg" class="muted"></span></div>
+      </div>
+    </div>
+    <div class="card flat"><h3>📊 状态</h3>
+      <div class="kv"><b>审查缓存</b><span id="st-cache" class="muted"></span></div>
+      <div class="kv"><b>信任分</b><pre id="st-trust" style="margin:.2rem 0"></pre></div>
+    </div>
+  </section>
+</main>
+<script src="/assets/page.js"></script></body></html>

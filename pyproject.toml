@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "multi-judge-consensus"
+version = "0.4.1"
+description = "多模型共识审查框架：跨厂商国产大模型委员会交叉审查 Agent 输出，结构化投票+辩论压制幻觉（零第三方依赖）"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "GPL-3.0-or-later" }
+keywords = ["llm", "hallucination", "multi-agent", "debate", "evaluation", "review"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+[project.scripts]
+mjc = "mjc.cli:main"
+
+[tool.setuptools]
+packages = ["mjc"]

@@ -1,0 +1,166 @@
+{
+ "providers": {
+  "deepseek": {
+   "label": "DeepSeek 深度求索",
+   "endpoint": "https://api.deepseek.com/v1",
+   "models": [
+    "deepseek-v4-flash",
+    "deepseek-chat"
+   ],
+   "note": "deepseek-chat=V3；flash 白菜价"
+  },
+  "glm": {
+   "label": "智谱 GLM",
+   "endpoint": "https://open.bigmodel.cn/api/paas/v4",
+   "models": [
+    "glm-4-flash",
+    "glm-4-plus",
+    "glm-4.5"
+   ],
+   "note": "glm-4-flash 接近免费，实测审查主力"
+  },
+  "qwen": {
+   "label": "阿里百炼·token-plan",
+   "endpoint": "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+   "models": [
+    "qwen3.8-max",
+    "qwen3-turbo"
+   ],
+   "note": "OpenClaw 专属 token-plan 端点；qwen3.8-max 需该套餐已购买（09-06 实测 403 未购买）"
+  },
+  "dashscope": {
+   "label": "阿里百炼·标准版",
+   "endpoint": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+   "models": [
+    "qwen3-turbo",
+    "qwen-plus",
+    "qwen-max"
+   ],
+   "note": "百炼标准 API key（dashscope.console 里那个）；qwen3-turbo 白菜价，欠费需充值"
+  },
+  "doubao": {
+   "label": "字节豆包·火山方舟",
+   "endpoint": "https://ark.cn-beijing.volces.com/api/v3",
+   "models": [
+    "doubao-seed-1.6-lite",
+    "doubao-seed-1.6"
+   ],
+   "note": "模型 ID 以火山方舟控制台为准；lite 白菜价"
+  },
+  "kimi": {
+   "label": "Moonshot Kimi",
+   "endpoint": "https://api.moonshot.cn/v1",
+   "models": [
+    "kimi-latest"
+   ],
+   "note": "模型 ID 以官方文档为准；未实测审查质量"
+  }
+ },
+ "model_tags": {
+  "deepseek:deepseek-v4-flash": {
+   "tag": "🥬白菜",
+   "note": "便宜快，实测可靠"
+  },
+  "deepseek:deepseek-chat": {
+   "tag": "💰平价",
+   "note": "V3 级，更强但略贵"
+  },
+  "glm:glm-4-flash": {
+   "tag": "🥬白菜",
+   "note": "接近免费；初筛+委员会实测可用"
+  },
+  "glm:glm-4-plus": {
+   "tag": "💎旗舰",
+   "note": "精审主力，实测 streak 最高"
+  },
+  "glm:glm-4.5": {
+   "tag": "💎旗舰",
+   "note": "更强，未进基准测试"
+  },
+  "qwen:qwen3-turbo": {
+   "tag": "🥬白菜",
+   "note": "阿里白菜价；token-plan 端点模型需套餐购买"
+  },
+  "qwen:qwen3.8-max": {
+   "tag": "💎旗舰",
+   "note": "token-plan 直连（09-06 实测 403 未购买）"
+  },
+  "dashscope:qwen3-turbo": {
+   "tag": "🥬白菜",
+   "note": "百炼标准端点；欠费需充值"
+  },
+  "dashscope:qwen-plus": {
+   "tag": "💰平价",
+   "note": "百炼标准端点"
+  },
+  "dashscope:qwen-max": {
+   "tag": "💎旗舰",
+   "note": "百炼标准端点"
+  },
+  "doubao:doubao-seed-1.6-lite": {
+   "tag": "🥬白菜",
+   "note": "未实测"
+  },
+  "doubao:doubao-seed-1.6": {
+   "tag": "💰平价",
+   "note": "未实测"
+  },
+  "kimi:kimi-latest": {
+   "tag": "💰平价",
+   "note": "未实测"
+  }
+ },
+ "tiers": {
+  "eco": {
+   "label": "🥬 省钱档",
+   "desc": "2×白菜模型交叉，最快最省（干净内容初筛 1 调用放行）",
+   "committee": [
+    "glm:glm-4-flash",
+    "deepseek:deepseek-v4-flash"
+   ],
+   "screen_enabled": true,
+   "screen_model": "glm:glm-4-flash",
+   "screen_conf": 0.8,
+   "degrade": false,
+   "cache": true
+  },
+  "standard": {
+   "label": "⚖️ 标准档",
+   "desc": "2 白菜 + 1 精审旗舰，默认（基准 100% 识别 / 0% 误杀）",
+   "committee": [
+    "deepseek:deepseek-v4-flash",
+    "glm:glm-4-flash",
+    "glm:glm-4-plus"
+   ],
+   "screen_enabled": true,
+   "screen_model": "glm:glm-4-flash",
+   "screen_conf": 0.75,
+   "degrade": false,
+   "cache": true
+  },
+  "pro": {
+   "label": "💎 精审档",
+   "desc": "最强模型全量委员会（不用初筛），最贵最稳",
+   "committee": [
+    "glm:glm-4-plus",
+    "glm:glm-4.5",
+    "deepseek:deepseek-chat"
+   ],
+   "screen_enabled": false,
+   "screen_model": null,
+   "screen_conf": 0.75,
+   "degrade": false,
+   "cache": true
+  }
+ },
+ "current": {
+  "tier": "standard",
+  "committee": null,
+  "screen_enabled": null,
+  "screen_model": null,
+  "screen_conf": null,
+  "degrade": null,
+  "cache": null
+ },
+ "key_status": {}
+}

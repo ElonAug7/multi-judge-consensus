@@ -1,0 +1,27 @@
+# ---- 密钥与本地配置（绝不入库）----
+keys.local.json
+keys.local.json.tmp
+settings.json
+settings.json.tmp
+webui.token
+webui.env
+
+# ---- 运行日志与数据 ----
+logs/
+*.log
+
+# ---- 内部开发笔记（不入库）----
+REFACTOR-PLAN.md
+ADVICE-REVIEW.md
+
+# ---- Python ----
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+*.egg-info/
+build/
+dist/
+
+# ---- 系统 ----
+.DS_Store
