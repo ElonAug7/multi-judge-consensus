@@ -150,6 +150,33 @@ python3 tests/test_phase3.py --api-degrade # P3.3 信任降级（真 API）
 
 > 注：外部推荐单里 5 处出处有误已修正（Liang=EMNLP2024 / FaithDial=TACL2022 / Wang=ACL2024 / LayerSkip=ACL2024 / Selective Prediction 应为 Geifman&El-Yaniv 2017）。完整核验记录见 ADVICE-REVIEW.md。
 
+## 适配其他 Agent（三种接入方式）
+
+**① MCP（推荐，Claude Desktop/Code、Cursor、Windsurf、Cline 等均支持）**
+```bash
+python3 -m mjc.mcp    # stdio JSON-RPC，零依赖
+# Claude Code:  claude mcp add mjc -- python3 -m mjc.mcp
+# Cursor:       Settings → MCP → Add → Command: python3 -m mjc.mcp
+# 之后 Agent 可直接调用工具 review(task, output) 得到 {verdict, issues, tokens, cost}
+```
+
+**② 子进程 CLI（任何语言/任何 Agent 都能调）**
+```bash
+python3 -m mjc.cli auto --task "<任务>" --content "<输出>" --kind message --no-memory
+# 输出单行 JSON：{"reviewed":true,"verdict":"revise",...}；退出码：pass=0
+python3 -m mjc.cli gate --stage deliver --task "<任务>" --content "<产物>"
+# 闸门语义退出码：pass=0 / revise=2 / reject·need_human=3 —— 接 CI/Agent 循环即用
+```
+
+**③ HTTP API（Dify/Coze/n8n 自定义工具、跨机调用）**
+```bash
+python3 -m mjc.cli webui    # 默认 127.0.0.1:8123；跨机绑 0.0.0.0 需 MJC_WEBUI_TOKEN
+curl -X POST http://127.0.0.1:8123/api/review \
+  -H "Content-Type: application/json" [-H "X-MJC-Token: <token>"] \
+  -d '{"task":"...","output":"..."}'
+# 返回 {record:{final, votes, issues…}, meta:{api_calls, tokens, cost_yuan…}}
+```
+
 ## OpenClaw 集成（可选，非核心）
 
 `autocheck/scan/memctx/live` 与 WebUI 实时任务流同时支持作为 OpenClaw 网关的自动审查链路：

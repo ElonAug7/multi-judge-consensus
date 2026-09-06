@@ -256,6 +256,12 @@ def cmd_webui(args):
     webui_main(args.host, args.port)
 
 
+def cmd_mcp(args):
+    """MCP stdio 服务器：任意 MCP 客户端（Claude/Cursor 等）把审查当工具用"""
+    from mjc.mcp_server import serve_stdio
+    serve_stdio()
+
+
 def cmd_bench(args):
     """红队基准运行器（真 API；默认 quick 子集控制成本）"""
     from mjc import bench
@@ -449,6 +455,9 @@ def main():
     p_dispose = sub.add_parser("dispose", help="记录审查意见处置（主 agent 逐条答复）→ dispositions.jsonl（WebUI 纠正过程可视化）")
     p_dispose.add_argument("--in", dest="in_file", required=True, help="JSON 文件 {entry, decisions:[{idx,adopted,action?,note}]}")
     p_dispose.set_defaults(fn=cmd_dispose)
+
+    p_mcp = sub.add_parser("mcp", help="MCP stdio 服务器（Claude/Cursor 等客户端接入）")
+    p_mcp.set_defaults(fn=cmd_mcp)
 
     p_web = sub.add_parser("webui", help="本地 Web 界面（默认 127.0.0.1:8123）")
     p_web.add_argument("--host", default=os.environ.get("MJC_WEBUI_HOST", "127.0.0.1"))
