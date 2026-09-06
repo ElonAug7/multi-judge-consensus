@@ -82,15 +82,27 @@ def auto_review(content, channel="?", task=None, no_memory=False, kind="message"
         # 同内容 N 小时内已审过（且结论相同——内容未变）→ 跳过，省一次 API 审查
         return 0, {"skipped": "dup", "sha": sha, "kind": kind, "since": dup_ts}
     os.makedirs(AUTO_LOG_DIR, exist_ok=True)
+    pool_err = None
     try:
         from mjc import settings
         eff = settings.effective()
         pool = build_pool(eff["committee"])
     except Exception as e:
-        return 1, {"error": f"档位配置不可用: {e}"}
+        eff = None
+        pool = []
+        pool_err = f"档位配置不可用: {e}"
     if len(pool) < 2:
-        return 1, {"error": "可用 Judge <2"}
-    screen_j = pipeline.resolve_screen_judge(None)
+        if pool_err is None:
+            pool_err = "可用模型不足 2 个：请配置至少一家厂商 key（python3 -m mjc.cli setup）"
+        # 无委员会可用：确定性验证器仍可零成本拦截；无命中才报错（"没 key 也能玩"承诺）
+        try:
+            from mjc import verifier
+            vissues = verifier.verify(content) if os.environ.get("MJC_VERIFIER") != "0" else []
+        except Exception:
+            vissues = []
+        if not vissues:
+            return 1, {"error": pool_err}
+    screen_j = pipeline.resolve_screen_judge(None) if len(pool) >= 2 else None
     # 记忆上下文（Mnemosyne 优先）
     facts, mem_meta = [], {"primary": "none", "attempted": [], "notes": "memctx 未启用"}
     if not no_memory:

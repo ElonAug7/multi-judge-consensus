@@ -205,5 +205,27 @@ def main():
     print("== autocheck 全部通过 ✅ ==")
 
 
+def _test_no_key_verifier_fallback():
+    """无委员会（无 key）时：确定性验证器仍可零成本拦截；干净内容报错。"""
+    import sys as _sys
+    from unittest import mock
+    from mjc import autocheck
+    fake_settings = mock.MagicMock()
+    fake_settings.effective.side_effect = ValueError("无 key")
+    with mock.patch.object(autocheck, "build_pool", return_value=[]), \
+         mock.patch.object(autocheck.pipeline, "run_review_once") as rro, \
+         mock.patch.dict(_sys.modules, {"mjc.settings": fake_settings}):
+        code, out = autocheck.auto_review("这段内容没有任何数字日期错误。", task="t", kind="code", min_len=10)
+        assert out.get("error"), "干净内容+无池应报错"
+        rro.return_value = ({"final": "revise", "pass_votes": 0, "reject_votes": 0, "revise_votes": 1,
+                             "debate_rounds": 0, "rounds": [{"round": 1, "kind": "verifier", "opinions": []}],
+                             "tokens": {}, "cost_yuan": 0.0},
+                            {"api_calls": 0, "verifier": True})
+        code2, out2 = autocheck.auto_review("8 月 31 日提交，9 月 5 日合并，历时 4 天。", task="t", kind="code", min_len=10)
+        assert out2.get("verdict") == "revise" and rro.called, "无池+可验算错误应走验证器拦截"
+    print("  ✅ 无 key 兜底：干净报错 / 可验算错误零成本拦截")
+    return True
+
+
 if __name__ == "__main__":
     main()
