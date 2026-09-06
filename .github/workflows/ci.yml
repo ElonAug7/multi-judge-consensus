@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.9", "3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: 离线测试套件（零 API，无需任何 key）
+        run: |
+          set -e
+          for t in test_settings test_webui_api test_scan test_autocheck \
+                   test_dispositions test_phase3 test_verifier test_live \
+                   test_screen_toggle test_mcp; do
+            echo "== $t =="
+            python3 tests/$t.py
+          done
+
+      - name: CLI 冒烟（无 key 环境）
+        run: |
+          python3 -m mjc.cli doctor || true
+          python3 -m mjc.cli gate --stage deliver --task "CI" \
+            --content "本次交付：8 月 31 日提交，9 月 5 日合并，历时 4 天；预算 3+1.2+2+2.5=8.5 万元。" \
+            && exit 1 || test $? -eq 2  # 验证器应拦截（退出码 2）

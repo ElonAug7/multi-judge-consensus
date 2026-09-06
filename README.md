@@ -1,194 +1,128 @@
-# Multi-Judge Consensus（多模型共识审查框架）· 纯国产模型版
+<p align="center">
+  <img src="https://img.shields.io/badge/license-GPL--3.0-blue.svg" alt="License"/>
+  <img src="https://img.shields.io/badge/python-3.9%2B-3776AB.svg" alt="Python"/>
+  <img src="https://img.shields.io/badge/dependencies-zero-4CAF50.svg" alt="Zero dependencies"/>
+  <img src="https://img.shields.io/badge/offline%20tests-10%20suites-green.svg" alt="Tests"/>
+  <img src="https://img.shields.io/badge/recall-1.0%20on%20red--team%20bench-yellow.svg" alt="Bench recall"/>
+</p>
 
-让多个不同厂商的国产大模型组成"审查委员会"，对 Agent 输出做阶段性交叉审查：结构化辩论 + 多数投票达成共识，从架构层面压制幻觉。
+<h1 align="center">🦉 Multi-Judge Consensus（MJC）</h1>
+<p align="center"><b>让多个国产大模型组成"审查委员会"，交叉审查你的 Agent 输出 —— 从架构层面压制幻觉</b></p>
+<p align="center"><i>纯 Python 标准库 · 零第三方依赖 · key 自备 · 本地可控 · 大厂白菜价模型可用</i></p>
 
-## 效果验证（2026-09-06 · 红队基准集 v1 实测）
+---
 
-21 条对抗样本（跨文档矛盾 5 / 时序幻觉 5 / 数值陷阱 5 / 指令偏离 3 / 干净对照 3），
-pro 档全流程（验证器 → 初筛 → 4 委员 → 辩论 ≤2 轮）：
+## 为什么需要它
 
-| 场景 | 缺陷放行率 | 干净误杀 |
+你的 Agent 输出越来越长、越来越"像真的"，但幻觉防不胜防。**单一模型的自查存在盲区**——它看不见自己的错误。
+
+MJC 的思路：**不同厂商模型的训练数据与架构不同，盲区也不同**。DeepSeek、GLM 对同一段含幻觉文本独立审查时，可能双双以 0.98+ 置信度识别出矛盾——**单一模型会漏的幻觉，委员会很难集体瞎**。
+
+## ✨ 核心亮点
+
+| | |
+|---|---|
+| 🗳️ **三模型委员会 + 纯规则仲裁** | 不用 LLM 做最终裁决（避免引入新幻觉源），结构化 JSON 意见 → 多数投票 → 分歧触发交叉辩论（≤2 轮，共识即停） |
+| 🔍 **确定性验证器** | 日期跨度 / 百分比基数 / 显式求和 100% 可验算错误由规则层**零成本秒拦**——LLM 心算不靠谱的活交给代码 |
+| 💰 **白菜价路由** | 初筛（1 次调用 ≈¥0.002）→ 双白菜 → 旗舰委员会，三级只升不降；同内容重跑 0 成本（缓存） |
+| 🖥️ **Apple 风 Web 管理台** | 审查台 / 实时任务流（每票落定实时动画）/ 后台管理（key、模型目录、三档位一键切换） |
+| 🔌 **适配任何 Agent** | MCP 服务器（Claude/Cursor 即插即用）+ 子进程 CLI（退出码闸门语义）+ HTTP API + OpenClaw 原生链路 |
+| 🧪 **红队基准集** | 21 条对抗样本（跨文档矛盾/时序幻觉/数值陷阱/指令偏离）+ Recall/Precision/F1 历史曲线 |
+
+## 📊 效果验证（2026-09-06 红队基准 v1 实测，真 API）
+
+| 场景 | 缺陷放行率 | 干净内容误杀 |
 |---|---|---|
-| 无审查直接交付 | 100%（18/18 原样流出） | — |
-| 单模型自查（glm-4-plus） | 11.1%（漏 2/18） | — |
-| **MJC 全流程** | **0%（18/18 全拦）** | **0/3** |
+| 无审查直接交付 | **100%**（18/18 原样流出） | — |
+| 单模型自查（glm-4-plus） | **11.1%**（漏 2/18） | — |
+| **🦉 MJC 全流程** | **0%（18/18 全拦）** | **0/3** |
 
-- 全量 Recall 1.0 · Precision 1.0 · F1 1.0；分类别 5/5 · 5/5 · 5/5 · 3/3
-- 拦截分层：确定性验证器 1 条（求和，零 LLM 成本），委员会+辩论 17 条
-- 复现：`python3 -m mjc.cli bench --set v1-full`（≈¥0.6/次真 API）；历史曲线 logs/bench-history.jsonl
-- quick 子集 `--set quick`（9 条 ≈¥0.2）；辩论消融 `--ablation 0,1,2`
+全量 Recall **1.0** · Precision **1.0** · F1 **1.0**；跨文档矛盾 5/5、时序幻觉 5/5、数值陷阱 5/5、指令偏离 3/3。
+拦截分层：确定性验证器 1 条（零 LLM），委员会+辩论 17 条。复现：`python3 -m mjc.cli bench --set v1-full`。
 
-> 口径：构造缺陷集（最坏情况拦截能力），非真实生成分布。样本自洽性同样经过质检（初版 1 条样本本身可自洽被替换）。
-
-## 为什么有效
-
-不同厂商的模型训练数据与架构不同，"盲区"不同。DeepSeek 和 GLM 对同一段有幻觉的文本独立审查时，双双以 0.98+ 置信度识别出矛盾——单一模型可能漏掉，委员会很难集体瞎。
-
-**实测（9 样本验收）**：幻觉识别率 **83%**、误杀率 **0%**（目标 ≥50%）。
-
-## 快速开始
+## 🚀 下载即用（三步）
 
 ```bash
-# 下载即用三步（零依赖，Python ≥3.9 即可，无需 pip install 任何包）
-git clone <repo-url> && cd multi-judge-consensus
-python3 -m mjc.cli setup          # ① 向导录入 API key（deepseek/智谱有免费额度；可回车跳过）
-python3 -m mjc.cli webui          # ② 打开本地管理台 http://127.0.0.1:8123
-# ③ 审查一段输出（初筛 → 委员会 → 辩论，全自动）
-python3 -m mjc.cli judge-only --task "查明天北京的天气并写提醒" --output "明天北京有特大暴雨，请带伞"
-
-# 其他入口
-python3 -m mjc.cli doctor         # 体检（key/档位/信任分/缓存/累计用量）
-python3 -m mjc.cli review --task "写一封请假邮件"   # 生成→审查→打回循环
-python3 -m mjc.cli bench --set quick               # 跑红队基准（真 API，≈¥0.2）
-python3 -m mjc.cli setup                           # 重跑向导可增删 key
+git clone <repo-url> && cd multi-judge-consensus   # 零依赖：不用 pip install 任何东西
+python3 -m mjc.cli setup          # ① 向导录入 API key（deepseek/智谱有免费额度；可跳过）
+python3 -m mjc.cli webui          # ② 打开 http://127.0.0.1:8123 管理台
+python3 -m mjc.cli judge-only --task "查北京的天气" --output "北京明天有特大暴雨"   # ③ 开审
 ```
 
-> 没配 key 也能玩：界面/离线测试/文档全可用；key 配 1 家即可跑（委员会自动按可用厂商收缩），
-> 配 2 家以上效果最佳（跨厂商盲区互补是核心设计）。key 只存本机 keys.local.json（600）或环境变量。
+> 没 key 也能玩：确定性验证器、全部界面、离线测试可用；1 家 key 即可跑（委员会自动收缩），2 家以上效果最佳。
 
-## 架构
+## 🧠 一次审查的旅程
 
 ```
-用户任务 → Agent(生成模型) → 子任务完成
-                    ↓ 中间结果
-             审查委员会 Judge Pool
-              ┌──────────┬──────────┐
-              │DeepSeek  │   GLM    │   ← 不同厂商，独立审查
-              └────┬─────┴────┬────┘
-                   ↓          ↓
-              结构化意见（verdict/confidence/issues[]）
-                   ↓
-              仲裁器：多数投票 → 分歧? → 交叉辩论(≤2轮) → 最终裁决
-                   ↓
-            pass → 进入下一阶段 | reject → 打回重写（附审查意见）
+内容进来
+ ├─ ⓪ 确定性验证器    （日期/数值/求和，零 LLM，命中直接打回）
+ ├─ ① 缓存查重        （同内容重跑 = 0 成本）
+ ├─ ② 初筛            （glm-4-flash，pass 且 conf≥阈值 → 1 次调用放行）
+ ├─ ③ 委员会          （3 模型并行独立审查：verdict + confidence + issues[]）
+ ├─ ④ 仲裁器          （纯规则投票：≥2/3 pass 过；分歧触发辩论）
+ ├─ ⑤ 辩论 ≤2 轮      （互相看意见 → 改判，共识即停）
+ └─ ⑥ 终局            （裁决 + tokens + 费用估算 + 全量日志）
 ```
 
-## 模块
+三档位策略（后台一键切）：🥬 省钱（2×白菜）· ⚖️ 标准（2 白菜+1 精审旗舰）· 💎 精审（旗舰全量，无初筛）
 
-| 模块 | 文件 | 说明 |
-|---|---|---|
-| providers | `mjc/providers.py` | 国产模型统一调用（urllib 零依赖）：deepseek / glm（+qwen 预留） |
-| judge | `mjc/judge.py` | 单 Judge 审查：结构化 JSON（verdict/confidence/issues/final_reasoning），支持交叉辩论输入 |
-| arbiter | `mjc/arbiter.py` | 投票 + 分歧触发辩论 + 仲裁（串行/并发 ParallelArbiter） |
-| pipeline | `mjc/pipeline.py` | Phase 3 统一审查入口：初筛→降级→委员会，缓存/信任分/日志内聚 |
-| cache | `mjc/cache.py` | 审查结果缓存（P3.2）：同内容重跑 0 API |
-| trust | `mjc/trust.py` | 信任分/降级（P3.3）：连续一致 Judge 降频 |
-| webui | `mjc/webui.py` | Web 界面（审查台+后台管理+纠正过程）：127.0.0.1:8123，页面资产 mjc/assets/ |
-| autocheck | `mjc/autocheck.py` | 自动审查核心 auto_review + cmd_auto/scan（P4 从 cli 拆出） |
-| scan | `mjc/scan.py` | 转录扫描触发源（webchat 无 message:sent 的替代通道） |
-| dispositions | `mjc/dispositions.py` | 审查意见处置记录（纠正过程可视化数据源） |
-| paths | `mjc/paths.py` | 公共路径常量（消除循环依赖） |
-| cli | `mjc/cli.py` | CLI 薄壳（review/judge-only/auto/scan/dispose/webui/doctor） |
+## 🔌 适配其他 Agent
 
-## Phase 3：成本优化（初筛 / 缓存 / 信任降级）
-
+**① MCP（推荐）** —— Claude Desktop/Code、Cursor、Windsurf、Cline：
 ```bash
-# 初筛：glm-4-flash 先审，pass+置信≥0.75 直接放行免委员会（review 默认开，judge-only 需 --screen）
-python3 -m mjc.cli review --task "..."                      # 默认走初筛
-python3 -m mjc.cli judge-only --task "..." --output "..." --screen
-python3 -m mjc.cli review --task "..." --no-screen          # 关初筛
-MJC_SCREEN_MODEL=qwen:qwen3-turbo python3 -m mjc.cli review --task "..."  # 换初筛模型
-
-# 缓存（默认开，--no-cache 关）：同 task+output 重跑直接命中，0 API
-# 降级（--degrade）：trust.json 中连续一致≥5 次的 Judge 本轮跳过；双 Judge 分歧自动升级回满委员会
-python3 -m mjc.cli review --task "..." --degrade
-python3 -m mjc.cli doctor   # 可看信任分与缓存条目
-```
-
-## 辩论规则（仲裁器）
-
-- ≥2/3 pass → 通过
-- ≥2/3 reject → 打回重写
-- 1:1:1 或高置信(≥0.7)少数派反对 → 触发第 2 轮交叉辩论（每个 Judge 看到其他 Judge 意见后改判）
-- 辩论 ≤2 轮；打回 ≤3 次；超限强制输出标记低置信度
-
-## 测试
-
-```bash
-python3 tests/test_hallucination.py   # 9 样本幻觉验收（识别率/误杀率）
-python3 tests/test_debate.py          # P2.5 辩论增益（单轮 vs 辩论，--set f-bench）
-python3 tests/test_settings.py        # settings/probe/apply 离线（零 API）
-python3 tests/test_webui_api.py       # Web HTTP API 离线（monkeypatch，零 API）
-python3 tests/test_scan.py            # 转录扫描器离线（零 API）
-python3 tests/test_autocheck.py       # 自动审查核心离线（零 API）
-python3 tests/test_dispositions.py    # 处置记录离线（零 API）
-python3 tests/test_phase3.py --api-screen   # P3.1 初筛基准（真 API，成本受控）
-python3 tests/test_phase3.py --api-degrade # P3.3 信任降级（真 API）
-```
-
-## 可用模型（2026-09-06 实测）
-
-| 厂商 | 模型 | 状态 |
-|---|---|---|
-| DeepSeek | deepseek-v4-flash / deepseek-chat | ✅ |
-| 智谱 GLM | glm-4-plus / glm-4-flash / glm-4.5 | ✅ |
-| 阿里 qwen3.8-max | token-plan API 直连 | ❌ 403 Unpurchased（OpenClaw 专属通道可用） |
-| 阿里 qwen-plus/max | dashscope 标准 key | ❌ 欠费 |
-
-## v0.3 代码交付工作流（方案 B + 方案 2 + 纠正可视化）
-
-- **强制工作流**（AGENTS.md）：每个编码任务收尾 → `auto --kind code` 初审 → **逐条处置**（客观错误当场修+重跑测试；纯风格不改但写明理由）→ reject/need_human 修后复审 ≤1 轮 → `dispose` 留痕 → 交付附【MJC 审查】报告行 + 【本批 MJC】自检字段
-- **纠正过程可视化**：后台管理新增「🧭 纠正过程」页——动画回放审查节点逐个提意见 → 主 agent 逐条答复（✅采纳·已修 / ❌未采纳+理由），数据源 `logs/auto/dispositions.jsonl`
-- 记忆链：Mnemosyne（优先）→ OpenClaw 官方（无 search CLI 占位跳过）→ 第三方（未配置）；每条结果记 memory.primary
-
-## 文献对照（2026-09-06 网核版，Crossref+DBLP 验证，arxiv 被墙部分标注）
-
-| 方向 | 论文 | 出处（网核） | 与 MJC 的关系 |
-|---|---|---|---|
-| 多 Agent 辩论 | Du et al., Multiagent Debate | ICML 2024 | 辩论轮机制源头 |
-| 多 Agent 辩论 | Liang et al., Divergent Thinking | EMNLP 2024 | 跨厂商=天然视角多样性 |
-| 多 Agent 辩论 | Chan et al., ChatEval | ICLR 2024 | 最接近的评审团工作（我们=结构化+纯规则仲裁） |
-| LLM 裁判 | Zheng et al., MT-Bench | NeurIPS 2023 | 裁判偏见警示（位置/冗长） |
-| LLM 裁判 | Wang et al., Not Fair Evaluators | ACL 2024 | 规则仲裁器（不用 LLM 仲裁）的背书 |
-| 幻觉检测 | Manakul et al., SelfCheckGPT | EMNLP 2023 | 独立审查理念（我们升级为跨厂商） |
-| 幻觉检测 | Farquhar et al., Semantic Entropy | Nature 2024 | 共识即停的学术版 |
-| 幻觉检测 | Kadavath et al., Know What They Know | NeurIPS 2022 ⚠️ | 置信度校准（我们=经验桶统计） |
-| 省钱路由 | Chen et al., FrugalGPT | arXiv 2023 ⚠️ | 初筛+三档位=级联路由 |
-| 选择性预测 | Geifman & El-Yaniv | NeurIPS 2017 | 初筛 conf 阈值=拒绝升级 |
-| RAG 忠实 | Es et al., ARES | NAACL 2024 | 少量标签校准思路（PPI） |
-| RAG 忠实 | Dziri et al., FaithDial | TACL 2022 | 证据锚定方向（暂缓项） |
-
-> 注：外部推荐单里 5 处出处有误已修正（Liang=EMNLP2024 / FaithDial=TACL2022 / Wang=ACL2024 / LayerSkip=ACL2024 / Selective Prediction 应为 Geifman&El-Yaniv 2017）。完整核验记录见 ADVICE-REVIEW.md。
-
-## 适配其他 Agent（三种接入方式）
-
-**① MCP（推荐，Claude Desktop/Code、Cursor、Windsurf、Cline 等均支持）**
-```bash
-python3 -m mjc.mcp    # stdio JSON-RPC，零依赖
+python3 -m mjc.mcp
 # Claude Code:  claude mcp add mjc -- python3 -m mjc.mcp
 # Cursor:       Settings → MCP → Add → Command: python3 -m mjc.mcp
-# 之后 Agent 可直接调用工具 review(task, output) 得到 {verdict, issues, tokens, cost}
 ```
-
-**② 子进程 CLI（任何语言/任何 Agent 都能调）**
+**② 子进程 CLI**（任何语言）—— 单行 JSON + 退出码闸门语义：
 ```bash
-python3 -m mjc.cli auto --task "<任务>" --content "<输出>" --kind message --no-memory
-# 输出单行 JSON：{"reviewed":true,"verdict":"revise",...}；退出码：pass=0
-python3 -m mjc.cli gate --stage deliver --task "<任务>" --content "<产物>"
-# 闸门语义退出码：pass=0 / revise=2 / reject·need_human=3 —— 接 CI/Agent 循环即用
+python3 -m mjc.cli auto --task "<任务>" --content "<输出>"    # pass 退出码 0
+python3 -m mjc.cli gate --stage deliver --task "<任务>" --content "<产物>"  # revise=2 / reject=3
+```
+**③ HTTP API**（Dify/Coze/n8n 等自定义工具）—— `POST /api/review`，token 可选鉴权。
+**④ OpenClaw** —— 自动转录扫描 + 编码任务阶段闸门 + 实时任务流（可选集成）。
+
+## 🏗️ 架构
+
+```
+mjc/
+├── providers.py      厂商统一调用（deepseek/glm/qwen/dashscope/doubao/kimi 注册表，加 key 即用）
+├── judge.py          单审查员（结构化 JSON + 背景记忆注入 + 同厂商替补）
+├── arbiter.py        投票/辩论仲裁（error 票中性、共识即停、每票实时事件）
+├── pipeline.py       流水线：验证器→初筛→降级→委员会（故障自动降级）
+├── verifier.py       确定性验证器（零 LLM：日期/百分比/求和，宁缺毋滥零误报）
+├── bench.py          红队基准运行器（Recall/Precision/F1 + 历史曲线 + 辩论消融）
+├── webui.py          服务端（审查台 + 实时任务流 + 后台管理，Apple 风毛玻璃 UI）
+├── mcp_server.py     MCP stdio 服务器（任意 MCP 客户端接入）
+├── autocheck/scan/gate  自动审查与阶段闸门（OpenClaw 可选集成）
+└── settings.py       后台配置（厂商/模型目录 🥬💰💎/三档位/探测）
+tests/                10 套离线测试（零 API，CI 友好）
+samples/bench-v1.json 红队基准样本
 ```
 
-**③ HTTP API（Dify/Coze/n8n 自定义工具、跨机调用）**
+## 🧪 测试与质量
+
 ```bash
-python3 -m mjc.cli webui    # 默认 127.0.0.1:8123；跨机绑 0.0.0.0 需 MJC_WEBUI_TOKEN
-curl -X POST http://127.0.0.1:8123/api/review \
-  -H "Content-Type: application/json" [-H "X-MJC-Token: <token>"] \
-  -d '{"task":"...","output":"..."}'
-# 返回 {record:{final, votes, issues…}, meta:{api_calls, tokens, cost_yuan…}}
+python3 tests/test_phase3.py         # 流水线/缓存/降级（离线）
+python3 tests/test_verifier.py       # 确定性验证器 15 断言
+python3 tests/test_mcp.py            # MCP 协议
+# …共 10 套，全部离线零 API；无 key 环境自动跳过 key 依赖用例（CI 友好）
 ```
 
-## OpenClaw 集成（可选，非核心）
+## 🗺️ 路线图
 
-`autocheck/scan/memctx/live` 与 WebUI 实时任务流同时支持作为 OpenClaw 网关的自动审查链路：
-回复转录扫描（`scan`）、Mnemosyne 记忆上下文（`memctx`，优先级 Mnemosyne→官方→第三方，缺失自动降级为空）、
-编码任务阶段闸门（`gate`，退出码阻断 + WebUI 实时动画）。不使用 OpenClaw 也能独立运行 CLI 与 WebUI。
+- [x] 委员会 + 辩论（ICML 2024 Multiagent Debate 工程化，共识即停）
+- [x] 验证器 / 缓存 / 三档位路由（FrugalGPT 级联思想）
+- [x] 后台管理 + 实时任务流 + 纠正过程可视化（dispositions 处置留痕）
+- [x] MCP / CLI / HTTP 三路 Agent 适配 + 红队基准
+- [ ] 置信度校准桶驱动的自适应阈值（数据积累中）
+- [ ] 更多厂商白菜模型接入（qwen3-turbo 等，槽位已备）
 
-## 开源说明
+## 📜 开源说明
 
-- 密钥只走环境变量（`MJC_DEEPSEEK_KEY` / `MJC_GLM_KEY` / `MJC_<厂商>_KEY`）或本地的 `keys.local.json`（已 gitignore）
-- 配置模板见 `settings.example.json`；运行时配置 `settings.json` 不入库
-- 全部零第三方依赖（仅 Python 标准库），key 自备，纯本地调用
+- **密钥安全**：key 只走环境变量（`MJC_<厂商>_KEY`）或本地 `keys.local.json`（600 权限，已 gitignore）；配置模板 `settings.example.json`
+- 审查记录/日志/运行时配置全部本地、不入库
+- 文献对照与设计取舍见 README 各节；效果数据全部真 API 实测可复现
+- License: **GPL-3.0** · 纯本地调用 · key 自备 · 兴趣驱动，不为任何厂商背书
 
-## License
-
-GPL-3.0 · 纯本地调用 · key 自备
+<p align="center"><i>如果 MJC 帮你拦住了一次线上事故级别的幻觉 —— 点个 ⭐ 就是最好的支持</i> 🦉</p>
