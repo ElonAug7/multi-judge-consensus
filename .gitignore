@@ -25,3 +25,5 @@ dist/
 
 # ---- 系统 ----
 .DS_Store
+# 内部开发日志
+PLAN.md
