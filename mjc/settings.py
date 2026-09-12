@@ -9,6 +9,7 @@ MJC · settings.py — 后台管理配置层（P4：管理界面数据层）
   tiers      档位预设 {id: {label, desc, committee, screen_enabled, screen_model, screen_conf, degrade, cache}}
   current    当前生效 {tier, 覆盖字段(可空)} —— 档位默认 + 覆盖
   limits     审查长度门槛 {gate, auto, scan}（字符数；默认 1 ≈ 全量送审；0 = 不限）
+  falsifier  证伪者（红队找错）{enabled, model(空=自动找跨厂), min_len}
   key_status key 连通性探测缓存 {provider: {ok, at, detail}}
 
 key 本体仍存 keys.local.json（600），由 providers.py 读取；本模块只提供增删改入口。
@@ -104,6 +105,7 @@ DEFAULT = {
                 "committee": None, "screen_enabled": None, "screen_model": None,
                 "screen_conf": None, "degrade": None, "cache": None},
     "limits": {"gate": 1, "auto": 1, "scan": 1},
+    "falsifier": {"enabled": True, "model": "", "min_len": 40},
     "key_status": {},
 }
 

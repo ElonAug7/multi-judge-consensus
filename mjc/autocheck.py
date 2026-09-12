@@ -66,11 +66,21 @@ def _collect_arb_issues(record):
     return [merged[k] for k in order]
 
 
-def _arbitrate(task, content, issues, timeout=90):
+def _arbitrate(task, content, issues, timeout=90, max_issues=3):
     """非 pass 时对事实类意见做独立仲裁（mjc.factcheck）；失败返回 None（不阻塞主流程）。"""
     try:
         from mjc import factcheck
-        r = factcheck.arbitrate_issues(task, content, issues, timeout=timeout)
+        r = factcheck.arbitrate_issues(task, content, issues, timeout=timeout, max_issues=max_issues)
+        return r if isinstance(r, dict) else None
+    except Exception:
+        return None
+
+
+def _falsify(task, content, timeout=90):
+    """证伪者（红队找错，独立性工程 ①）；失败返回 None（不阻塞主流程）。"""
+    try:
+        from mjc import falsifier
+        r = falsifier.challenge(task, content, timeout=timeout)
         return r if isinstance(r, dict) else None
     except Exception:
         return None
@@ -118,11 +128,12 @@ def _recent_duplicate(sha, kind, hours=DEDUPE_H):
 
 def auto_review(content, channel="?", task=None, no_memory=False, kind="message", verbose=False,
               emit=None, task_id=None, min_len=None, no_screen=False, screen_override=None,
-              arbitrate=True):
+              arbitrate=True, falsifier=True):
     """自动审查核心（供 cmd_auto 与 cmd_scan 复用）。返回 (exit_code, summary_dict)。
     kind: message（回复文本）| code（代码任务收尾审查，交付前用）
     min_len=None → 读 settings.limits.auto（默认 1，≈全量送审）；no_screen 强制跳过初筛。
-    arbitrate=True：非 pass 时对“事实类意见”做独立仲裁（factcheck）并写入日志/输出。"""
+    arbitrate=True：非 pass 时对“事实类意见”做独立仲裁（factcheck）并写入日志/输出。
+    falsifier=True：证伪者红队找错（独立性工程），confirmed 挑战可将 pass 升级为 revise。"""
     content = (content or "").strip()
     channel = channel or "?"
     kind = kind or "message"
@@ -193,28 +204,60 @@ def auto_review(content, channel="?", task=None, no_memory=False, kind="message"
         )
     except Exception as e:
         return 1, {"error": f"审查失败: {e}"}
+    final_verdict = record["final"]
+    # 证伪者（独立性工程 ①）：对抗性找错 → 与委员会事实意见合并 → 独立仲裁复核
+    fals_meta, fals_calls = None, 0
+    if falsifier:
+        _f = _falsify(task_text, content)
+        if _f and not _f.get("error") and not _f.get("skipped"):
+            fals_meta = _f
+            fals_calls = int(_f.get("calls") or 0)
+    arb_inputs = _collect_arb_issues(record)
+    if fals_meta:
+        for ch in fals_meta.get("challenges") or []:
+            arb_inputs.append({"judge_id": fals_meta.get("spec", ""),
+                               "type": ch.get("type", "factual_error"),
+                               "desc": ch.get("desc", ""),
+                               "sug": ch.get("suggestion", "")})
     arb_items, arb_calls = [], 0
-    if arbitrate and record.get("final") in ("revise", "reject", "need_human"):
-        fact_issues = _collect_arb_issues(record)
-        if fact_issues:
-            _arb = _arbitrate(task_text, content, fact_issues)
-            if _arb and not _arb.get("error"):
-                arb_items = _arb.get("items") or []
-                arb_calls = int(_arb.get("calls") or 0)
-                if arb_items and emit:
-                    try:
-                        from mjc import factcheck
-                        emit({"kind": "arbitration", **factcheck.summarize(arb_items)})
-                    except Exception:
-                        pass
+    if arbitrate and arb_inputs and (final_verdict in ("revise", "reject", "need_human") or fals_meta):
+        _arb = _arbitrate(task_text, content, arb_inputs, max_issues=4)
+        if _arb and not _arb.get("error"):
+            arb_items = _arb.get("items") or []
+            arb_calls = int(_arb.get("calls") or 0)
+            if arb_items and emit:
+                try:
+                    from mjc import factcheck
+                    emit({"kind": "arbitration", **factcheck.summarize(arb_items)})
+                except Exception:
+                    pass
+    # 证伪升级：证伪者挑战被 confirmed 且委员会判 pass → 升级为 revise（宁检勿放）
+    fals_confirmed, escalated = [], False
+    if fals_meta and arb_items:
+        spec = fals_meta.get("spec", "")
+        outcomes = {a.get("desc", "")[:120]: a.get("outcome")
+                    for a in arb_items if a.get("judge_id") == spec}
+        for ch in fals_meta.get("challenges") or []:
+            ch["outcome"] = outcomes.get((ch.get("desc") or "")[:120], "unknown")
+            if ch["outcome"] == "confirmed":
+                fals_confirmed.append(ch)
+        if fals_confirmed and final_verdict == "pass":
+            final_verdict = "revise"
+            escalated = True
+        if emit:
+            try:
+                emit({"kind": "falsifier", "n": len(fals_meta.get("challenges") or []),
+                      "confirmed": len(fals_confirmed), "escalated": escalated})
+            except Exception:
+                pass
     entry = {
         "ts": datetime.datetime.now().isoformat(timespec="seconds"),
         "kind": kind, "channel": channel, "len": len(content),
         "sha": sha,
-        "verdict": record["final"], "pass_votes": record.get("pass_votes"),
+        "verdict": final_verdict, "pass_votes": record.get("pass_votes"),
         "reject_votes": record.get("reject_votes"), "revise_votes": record.get("revise_votes"),
         "debate_rounds": record.get("debate_rounds", 0),
-        "api_calls": meta.get("api_calls", 0) + arb_calls, "screened": meta.get("screened"),
+        "api_calls": meta.get("api_calls", 0) + arb_calls + fals_calls, "screened": meta.get("screened"),
         "screen_passed": meta.get("screen_passed"),
         "tokens": record.get("tokens"), "cost_yuan": record.get("cost_yuan"),
         "memory": mem_meta,
@@ -226,11 +269,20 @@ def auto_review(content, channel="?", task=None, no_memory=False, kind="message"
                     for o in (rnd.get("opinions") or [])
                     for i in (o.get("issues") or [])][:6],
         "arbitration": arb_items,
+        "falsifier": ({"model": fals_meta.get("spec"), "n": len(fals_meta.get("challenges") or []),
+                        "challenges": fals_meta.get("challenges") or [],
+                        "confirmed": len(fals_confirmed), "escalated": escalated,
+                        "note": fals_meta.get("note")} if fals_meta else None),
     }
+    if fals_confirmed:  # 证伪者 confirmed 的挑战并入 issues（供修复环节消费）
+        entry["issues"] = (entry["issues"] + [
+            {"type": ch.get("type", "factual_error"), "judge": "falsifier",
+             "desc": (ch.get("desc") or "")[:200], "sug": (ch.get("suggestion") or "")[:150]}
+            for ch in fals_confirmed])[:8]
     day = datetime.date.today().isoformat()
     with open(os.path.join(AUTO_LOG_DIR, f"{day}.jsonl"), "a", encoding="utf-8") as f:
         f.write(json.dumps(entry, ensure_ascii=False) + "\n")
-    out = {"reviewed": True, "kind": kind, "verdict": entry["verdict"], "api_calls": entry["api_calls"],
+    out = {"reviewed": True, "kind": kind, "verdict": final_verdict, "api_calls": entry["api_calls"],
            "memory_source": mem_meta.get("primary"), "sha": entry["sha"],
            "len": entry["len"], "screened": entry["screened"]}
     if arb_items:
@@ -239,12 +291,19 @@ def auto_review(content, channel="?", task=None, no_memory=False, kind="message"
             out["arbitration"] = factcheck.summarize(arb_items)
         except Exception:
             pass
-    if record["final"] in ("reject", "need_human"):
+    if fals_meta:
+        out["falsifier"] = {"model": fals_meta.get("spec"),
+                            "n": len(fals_meta.get("challenges") or []),
+                            "confirmed": len(fals_confirmed), "escalated": escalated}
+    if final_verdict in ("reject", "need_human"):
         with open(os.path.join(AUTO_LOG_DIR, "findings.jsonl"), "a", encoding="utf-8") as f:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
-        print(f"⛔ 自动审查发现: {record['final']}（{record.get('reject_votes', 0)}rej）", file=sys.stderr)
-    elif record["final"] == "revise":
-        print("⚠️ 自动审查 revise（软提示，非击杀，详见日文件）", file=sys.stderr)
+        print(f"⛔ 自动审查发现: {final_verdict}（{record.get('reject_votes', 0)}rej）", file=sys.stderr)
+    elif final_verdict == "revise":
+        if escalated:
+            print(f"🕵️ 证伪者升级 pass→revise（confirmed {len(fals_confirmed)} 条，详见日文件）", file=sys.stderr)
+        else:
+            print("⚠️ 自动审查 revise（软提示，非击杀，详见日文件）", file=sys.stderr)
     return 0, out
 
 

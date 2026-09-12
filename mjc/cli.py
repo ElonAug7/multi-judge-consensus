@@ -41,7 +41,7 @@ DEFAULT_POOL = ("deepseek:deepseek-v4-flash", "glm:glm-4-flash", "glm:glm-4-plus
 def cmd_doctor(args=None):
     print("可用 providers:", providers.available_providers())
     for p in providers.available_providers():
-        print(f"  {p}: 模型 {providers.MODELS[p]} — key 就绪 ✓")
+        print(f"  {p}: 模型 {providers.MODELS.get(p) or '—'} — key 就绪 ✓")
     if not providers.available_providers():
         print("⚠️ 无可用 key！两步开始：")
         print("   1) python3 -m mjc.cli setup   # 交互式录入（deepseek/智谱都有免费额度）")
@@ -61,6 +61,12 @@ def cmd_doctor(args=None):
             from mjc import knowledge as _kb
             _bks = _kb.configured_backends()
             print(f"  知识源: {','.join(_bks) if _bks else 'off'}（事实核查证据检索）")
+        except Exception:
+            pass
+        try:
+            from mjc import falsifier as _fal
+            _fspec = _fal.resolve_spec()
+            print(f"  证伪者: {_fspec or 'off'}（红队找错，confirmed 可升级 pass→revise）")
         except Exception:
             pass
     except Exception as e:
@@ -362,6 +368,7 @@ def cmd_gate(args):
             no_memory=args.no_memory, min_len=_min_len,
             no_screen=not bool(getattr(args, "screen", False)),
             arbitrate=not bool(getattr(args, "no_arbitrate", False)),
+            falsifier=not bool(getattr(args, "no_falsifier", False)),
             emit=lambda ev: live.append(ev["kind"], tid,
                                         **{k: v for k, v in ev.items() if k not in ("kind", "ts_ms", "at", "task_id")}),
             task_id=tid,
@@ -509,6 +516,7 @@ def main():
     p_gate.add_argument("--screen", action="store_true", help="启用初筛快速通道（默认：交付闸门直走委员会全量）")
     p_gate.add_argument("--no-screen", action="store_true", help="（兼容保留；交付闸门默认即委员会全量）")
     p_gate.add_argument("--no-arbitrate", action="store_true", help="关闭事实仲裁（默认开启：非 pass 时对事实类意见独立复核）")
+    p_gate.add_argument("--no-falsifier", action="store_true", help="关闭证伪者（默认开启：红队找错 + 独立仲裁复核）")
     p_gate.set_defaults(fn=cmd_gate)
 
     p_dispose = sub.add_parser("dispose", help="记录审查意见处置（主 agent 逐条答复）→ dispositions.jsonl（WebUI 纠正过程可视化）")

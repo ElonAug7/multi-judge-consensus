@@ -177,5 +177,10 @@
   ],
   "max_per_review": 3,
   "timeout": 12
+ },
+ "falsifier": {
+  "enabled": true,
+  "model": "",
+  "min_len": 10
  }
 }

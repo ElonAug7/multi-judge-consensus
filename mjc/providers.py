@@ -59,6 +59,9 @@ MODELS = {
     "qwen": "qwen3.8-max",
     "deepseek": "deepseek-v4-flash",
     "glm": "glm-4-plus",
+    "dashscope": "qwen-max",
+    "doubao": "doubao-seed-1.6-lite",
+    "kimi": "kimi-latest",
 }
 # deepseek-chat 上下文可能不含 "deepseek-v3" 名字——deepseek 的 chat = V3；reasoner = R1
 ALIAS = {"deepseek-chat": "DeepSeek-V3", "deepseek-reasoner": "DeepSeek-R1", "qwen3.8-max": "通义千问 Qwen3-Max", "glm-4-plus": "GLM-4-Plus"}

@@ -44,13 +44,16 @@ content
   └─ ⑦ verdict       result + token usage + cost estimate, fully logged
 ```
 
-### Zero-hallucination design (v0.7.0)
+### Zero-hallucination design (v0.7.1)
 
 Detect → arbitrate → repair → re-check — engineered so the system never "fixes" a fact into a different error:
 
 - **Fact arbitration** (`mjc/factcheck.py`) — before any factual fix is attempted, the claim is independently
   re-checked by non-complainant, cross-vendor models (`confirmed` / `refuted` / `unknown`). Only `confirmed`
   replacements may touch specific facts; `refuted` means keep the original; `unknown` allows softening only.
+- **Falsifier pass** (`mjc/falsifier.py`) — an adversarial red-team reviewer (cross-vendor by default) hunts for
+  the weakest claims (premises, facts, absolutes); its challenges go through the same arbitration, and only
+  confirmed challenges can escalate a committee `pass` to `revise` — no false-positive escalations by design.
 - **External knowledge (opt-in)** (`mjc/knowledge.py`) — arbitration can pull web evidence snippets
   (Bing/Sogou/Baidu HTML backends, or a custom command backend; off by default, cached & rate-limited) so
   refutation/confirmation is grounded in retrievable sources rather than model memory alone.
@@ -156,7 +159,7 @@ mjc/
 ├── webui.py         admin console (review / live tasks / settings)
 ├── mcp_server.py    MCP stdio server
 └── settings.py      runtime config (provider registry, model catalog, tier presets)
-tests/               15 offline suites (0 API calls; key-dependent cases skip gracefully)
+tests/               16 offline suites (0 API calls; key-dependent cases skip gracefully)
 samples/bench-v1.json   adversarial benchmark corpus
 ```
 
@@ -166,7 +169,7 @@ samples/bench-v1.json   adversarial benchmark corpus
 python3 tests/test_phase3.py     # pipeline/cache/degradation
 python3 tests/test_verifier.py   # deterministic verifier
 python3 tests/test_mcp.py        # MCP protocol
-# …15 suites total, all offline. GitHub Actions runs them on Python 3.9/3.11/3.12.
+# …16 suites total, all offline. GitHub Actions runs them on Python 3.9/3.11/3.12.
 ```
 
 ## Security & notes

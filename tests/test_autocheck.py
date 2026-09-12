@@ -47,6 +47,7 @@ def _setup(tmp, screen_on=False):
     ac.LOG_DIR = tmp
     ac.build_pool = lambda specs: [object(), object()]  # 只要 len≥2
     ac._limit = lambda name, fallback=1: 1  # 全量介入语义（默认 1），不受真实 settings 影响
+    ac._falsify = lambda *a, **k: None  # 隔离证伪者（默认场景）
     settings_mod.effective = lambda: {"committee": ["deepseek:deepseek-v4-flash", "glm:glm-4-flash"]}
     mjc.pipeline.run_review_once = _fake_run
     mjc.pipeline.resolve_screen_judge = (lambda *a, **k: object()) if screen_on else (lambda *a, **k: None)
@@ -236,6 +237,39 @@ def test_dedupe_same_sha_kind_skips():
     print("  ✅ 去重：同 sha+kind 6h 内 dup 跳过；kind 不同 / 超窗 → 重审（P4.2）")
 
 
+def test_falsifier_escalation():
+    """证伪者升级：confirmed 挑战将 pass 升级为 revise 并并入 issues；unknown 不升级"""
+    tmp = tempfile.mkdtemp(prefix="mjc-auto-")
+    _setup(tmp)
+    old_f, old_a = ac._falsify, ac._arbitrate
+    ac._falsify = lambda *a, **k: {"spec": "dashscope:qwen-max", "calls": 1, "note": "n",
+        "challenges": [{"type": "factual_error", "desc": "挑战X", "suggestion": "改为Y"}]}
+    ac._arbitrate = lambda task, content, issues, timeout=90, max_issues=3: {
+        "items": [{"judge_id": "dashscope:qwen-max", "type": "factual_error", "desc": "挑战X",
+                    "sug": "改为Y", "outcome": "confirmed", "votes": []}], "calls": 2}
+    try:
+        code, out = auto_review("这是一段足够长的、会被证伪者挑战的内容文本" * 6, no_memory=True)
+        assert code == 0 and out["verdict"] == "revise", out
+        assert out.get("falsifier", {}).get("escalated") is True, out
+        day = datetime.date.today().isoformat()
+        entry = json.loads(open(os.path.join(tmp, f"{day}.jsonl"), encoding="utf-8").readline())
+        assert any(i.get("judge") == "falsifier" for i in entry["issues"]), entry["issues"]
+        # unknown → 不升级
+        tmp2 = tempfile.mkdtemp(prefix="mjc-auto-")
+        _setup(tmp2)
+        ac._falsify = lambda *a, **k: {"spec": "dashscope:qwen-max", "calls": 1,
+            "challenges": [{"type": "factual_error", "desc": "挑战Z", "suggestion": ""}]}
+        ac._arbitrate = lambda task, content, issues, timeout=90, max_issues=3: {
+            "items": [{"judge_id": "dashscope:qwen-max", "type": "factual_error", "desc": "挑战Z",
+                        "sug": "", "outcome": "unknown", "votes": []}], "calls": 2}
+        code2, out2 = auto_review("另一段足够长的内容文本需要被审查确认" * 6, no_memory=True)
+        assert code2 == 0 and out2["verdict"] == "pass", out2
+        assert out2["falsifier"]["escalated"] is False, out2
+    finally:
+        ac._falsify, ac._arbitrate = old_f, old_a
+    print("  ✅ 证伪者：confirmed→升级 revise；unknown→保持 pass")
+
+
 def main():
     print("== autocheck 离线测试（零 API）==")
     test_too_short()
@@ -250,6 +284,7 @@ def main():
     test_cmd_scan_short_reviewed()
     test_cmd_scan_full_path()
     test_dedupe_same_sha_kind_skips()
+    test_falsifier_escalation()
     print("== autocheck 全部通过 ✅ ==")
 
 
