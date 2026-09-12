@@ -12,12 +12,18 @@ MJC · repair.py — 双生产者修订共识（零幻觉架构 · 修复环节�
       · value-subset：一侧数值集合为另一侧真子集、且相对原文有改动 → 采纳子集侧
       · 纯文字改写（无数值变化）不自动采纳（无知识依据，防新幻觉）
       · 共识版本过短（< max(4, 40% 原文)）视为"清空式" → 不采纳
+  - v0.8.0 安全门（C6 实测 csqa-13 误伤：双方一致删值 → 委员会误杀时无护栏）：
+      · 值操作原则：只允许"具体值→具体值"的净替换；纯删除（丢值不加值/删光）与
+        纯新增（加值不换值）一律阻断（drop-blocked / add-blocked）；
+      · 盲重采样门（settings.repair.resample_gate，默认关）：值替换需在"看不见原答"
+        的重复采样中获得多数支持（supported），否则阻断（resample-xxx）。
   - 未达共识 → 安全方向：不采纳任何一版（保留原文），返回 disagreed（附两版供处置）；
   - 有效修订 < 2 路 → incomplete（保守不采纳）。
 
 用法：dual_revise(task, prev, feedback, specs=None)
       → {"mode": "agreed|disagreed|incomplete|error", "applied": str, "revs": [...],
-         "agreement": "exact|value-set|value-subset", "values": {...}, "tokens": N}
+         "agreement": "exact|value-set|value-subset|drop-blocked|add-blocked|resample-*",
+         "values": {...}, "resample": {...}?, "tokens": N}
 """
 import re
 
@@ -63,6 +69,70 @@ def _values(text):
 def _too_gutted(orig, cand):
     """共识版本是否"清空式"过短（< max(4, 40% 原文)）——防把答案改成无信息量短句。"""
     return len(_norm(cand)) < max(4, 0.4 * len(_norm(orig)))
+
+
+def _value_op_block(o, v):
+    """v0.8.0 值操作原则：只允许"具体值→具体值"的净替换。
+    返回 None（允许）或阻断原因：
+      - drop-blocked：删光 或 只删不加（保留的是旧值子集）
+      - add-blocked ：只加不换（没有旧值被丢弃）
+    """
+    if v == o:
+        return None
+    if not v:
+        return "drop-blocked"
+    if not (v - o):
+        return "drop-blocked"
+    if not (o - v):
+        return "add-blocked"
+    return None
+
+
+def _resample_gate(task, old_vals, new_vals):
+    """盲重采样门（settings.repair.resample_gate，默认关）。
+    未启用/基础设施不具备 → None（不阻塞）；否则返回 resample.evaluate 结果。"""
+    try:
+        from mjc import settings as _settings
+        cfg = ((_settings.load().get("repair") or {}).get("resample_gate") or {})
+        if not cfg.get("enabled"):
+            return None
+        from mjc import resample
+        r = resample.evaluate(task, old_vals, new_vals,
+                              n=int(cfg.get("n", 3)), min_support=int(cfg.get("min_support", 2)))
+        if not isinstance(r, dict) or r.get("verdict") in (None, "skipped"):
+            return None
+        return r
+    except Exception:
+        return None
+
+
+def _block_note(reason):
+    if reason == "drop-blocked":
+        return "值删除被阻断（v0.8.0：仅允许具体值→具体值替换）"
+    if reason == "add-blocked":
+        return "值新增被阻断（v0.8.0：缺旧值替换依据）"
+    if reason and reason.startswith("resample-"):
+        return f"盲重采样未支持（{reason}）→ 保留原文"
+    return "安全门阻断 → 保留原文"
+
+
+def _safety_checks(task, prev, cand_text):
+    """v0.8.0 安全门 → (ok, reason, extra)。
+    1) 值操作原则；2) 值替换时过盲重采样门。"""
+    o, v = _values(prev), _values(cand_text)
+    block = _value_op_block(o, v)
+    if block:
+        return False, block, {}
+    if v != o and (v - o):  # 值替换 → 重采样门
+        gate = _resample_gate(task, o, v - o)
+        if gate is not None and gate.get("verdict") != "supported":
+            return False, f"resample-{gate.get('verdict')}", {
+                "resample": {"verdict": gate.get("verdict"), "support": gate.get("support"),
+                             "n": gate.get("n"), "model": gate.get("model")}}
+        if gate is not None:
+            return True, "", {"resample": {"verdict": "supported", "support": gate.get("support"),
+                                             "n": gate.get("n"), "model": gate.get("model")}}
+    return True, "", {}
 
 
 def _consensus(orig, a, b):
@@ -137,10 +207,17 @@ def dual_revise(task, prev, feedback, specs=None, timeout=120):
             "b": sorted(_values(ok[1]["text"])),
         }
         if agreed and not _too_gutted(prev, cand["text"]):
-            result["mode"] = "agreed"
-            result["applied"] = cand["text"]
-            if _equivalent(cand["text"], prev):
-                result["note"] = "共识=与原文无实质差异"
+            ok2, why, extra = _safety_checks(task, prev, cand["text"])
+            result.update(extra)
+            if ok2:
+                result["mode"] = "agreed"
+                result["applied"] = cand["text"]
+                if _equivalent(cand["text"], prev):
+                    result["note"] = "共识=与原文无实质差异"
+            else:
+                result["mode"] = "disagreed"
+                result["agreement"] = why
+                result["note"] = _block_note(why)
         else:
             result["mode"] = "disagreed"
             if agreed:
@@ -148,10 +225,17 @@ def dual_revise(task, prev, feedback, specs=None, timeout=120):
             else:
                 result["note"] = "两版修订未达值级共识 → 保留原文（防新幻觉）"
     elif all(_equivalent(ok[0]["text"], r["text"]) for r in ok[1:]):
-        # >2 生产者：维持旧的严格等价路径（罕见）
-        result["mode"] = "agreed"
-        result["applied"] = ok[0]["text"]
-        result["agreement"] = "exact"
+        # >2 生产者：维持旧的严格等价路径（罕见），同样过安全门
+        ok2, why, extra = _safety_checks(task, prev, ok[0]["text"])
+        result.update(extra)
+        if ok2:
+            result["mode"] = "agreed"
+            result["applied"] = ok[0]["text"]
+            result["agreement"] = "exact"
+        else:
+            result["mode"] = "disagreed"
+            result["agreement"] = why
+            result["note"] = _block_note(why)
     else:
         result["mode"] = "disagreed"
         result["note"] = "多版修订不一致 → 保留原文（防新幻觉）"

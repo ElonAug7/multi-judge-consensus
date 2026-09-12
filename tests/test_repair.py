@@ -110,6 +110,49 @@ def test_gutted_refusal_blocked():
     print("  ✅ 清空式短句 → 不采纳（保留原文）")
 
 
+def test_value_drop_blocked():
+    # v0.8.0：双方一致删光数值（csqa-13 样式）→ 阻断，保留原文
+    orig = "国际空无展览首次举办于1960年。"
+    calls, restore = _ctx({"deepseek-v4-flash": "“国际空无展览”这一事件无法确认。",
+                           "glm-4-plus": "无法确认该事件是否真实存在。"})
+    try:
+        r = repair.dual_revise("t", orig, "fb")
+        assert r["mode"] == "disagreed" and r["applied"] == orig, r
+        assert r["agreement"] == "drop-blocked", r
+    finally:
+        restore()
+    print("  ✅ drop-blocked：一致删值 → 阻断（v0.8.0）")
+
+
+def test_resample_gate_blocks():
+    # 值替换已达成共识，但重采样门说 conflict → 阻断
+    calls, restore = _ctx({"deepseek-v4-flash": "该院于1997年成立。", "glm-4-plus": "该院1997年成立。"})
+    old_gate = repair._resample_gate
+    repair._resample_gate = lambda task, o, n: {"verdict": "conflict", "support": 0, "n": 3, "model": "mock"}
+    try:
+        r = repair.dual_revise("t", "该院于1995年成立。", "fb")
+        assert r["mode"] == "disagreed" and r.get("agreement") == "resample-conflict", r
+        assert r["applied"] == "该院于1995年成立。", r
+    finally:
+        repair._resample_gate = old_gate
+        restore()
+    print("  ✅ resample-conflict：盲重采样未支持 → 阻断")
+
+
+def test_resample_gate_supports():
+    calls, restore = _ctx({"deepseek-v4-flash": "该院于1997年成立。", "glm-4-plus": "该院1997年成立。"})
+    old_gate = repair._resample_gate
+    repair._resample_gate = lambda task, o, n: {"verdict": "supported", "support": 3, "n": 3, "model": "mock"}
+    try:
+        r = repair.dual_revise("t", "该院于1995年成立。", "fb")
+        assert r["mode"] == "agreed" and "1997" in r["applied"], r
+        assert (r.get("resample") or {}).get("verdict") == "supported", r
+    finally:
+        repair._resample_gate = old_gate
+        restore()
+    print("  ✅ resample-supported：盲重采样支持 → 采纳")
+
+
 def main():
     print("== repair 双生产者修订共识离线测试（零 API）==")
     test_agreed()
@@ -119,6 +162,9 @@ def main():
     test_value_set_same_applies()
     test_text_only_edit_not_applied()
     test_gutted_refusal_blocked()
+    test_value_drop_blocked()
+    test_resample_gate_blocks()
+    test_resample_gate_supports()
     print("== repair 全部通过 ✅ ==")
 
 
