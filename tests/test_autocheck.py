@@ -46,6 +46,7 @@ def _setup(tmp, screen_on=False):
     ac.AUTO_LOG_DIR = tmp
     ac.LOG_DIR = tmp
     ac.build_pool = lambda specs: [object(), object()]  # 只要 len≥2
+    ac._limit = lambda name, fallback=1: 1  # 全量介入语义（默认 1），不受真实 settings 影响
     settings_mod.effective = lambda: {"committee": ["deepseek:deepseek-v4-flash", "glm:glm-4-flash"]}
     mjc.pipeline.run_review_once = _fake_run
     mjc.pipeline.resolve_screen_judge = (lambda *a, **k: object()) if screen_on else (lambda *a, **k: None)
@@ -55,10 +56,29 @@ def _setup(tmp, screen_on=False):
 def test_too_short():
     tmp = tempfile.mkdtemp(prefix="mjc-auto-")
     _setup(tmp)
-    code, out = auto_review("短", no_memory=True)
+    code, out = auto_review("短", no_memory=True, min_len=10)
     assert code == 0 and out.get("skipped") == "too_short" and out["len"] == 1, out
     assert os.listdir(tmp) == [], "too_short 不应落任何文件"
-    print("  ✅ too_short(<80)：跳过、零文件、exit 0")
+    print("  ✅ too_short（显式 min_len=10）：跳过、零文件、exit 0")
+
+
+def test_no_reply_and_nontext_skipped():
+    tmp = tempfile.mkdtemp(prefix="mjc-auto-")
+    _setup(tmp)
+    code, out = auto_review("NO_REPLY", no_memory=True)
+    assert code == 0 and out.get("skipped") == "no_reply", out
+    code, out = auto_review("\U0001f99e\U0001f44c\u2705", no_memory=True)
+    assert code == 0 and out.get("skipped") == "no_text", out
+    assert os.listdir(tmp) == [], "占位/纯符号不应落任何文件"
+    print("  ✅ NO_REPLY / 纯符号：结构化跳过（全量介入下的必要豁免）")
+
+
+def test_default_full_intervention_reviews_short():
+    tmp = tempfile.mkdtemp(prefix="mjc-auto-")
+    captured = _setup(tmp)
+    code, out = auto_review("嗯，我修好了。", no_memory=True)  # 7 字，旧门槛(<80)会被跳过
+    assert code == 0 and out.get("reviewed") and captured["calls"] == 1, out
+    print("  ✅ 全量介入：短回复（默认 min_len=1）也送审")
 
 
 def test_kind_code_default_task():
@@ -126,28 +146,53 @@ def test_cmd_auto_stdin_content():
     print("  ✅ cmd_auto：直接 content → 0（stdout 已打 JSON）")
 
 
-def test_cmd_scan_too_short_branch():
+def test_cmd_scan_below_threshold_skips():
     cand = {"ts_ms": 9999, "ts": "2026-09-06T10:00:00", "content": "短" * 60, "id": "e1"}
     called = {}
 
     def _noop(*a, **k):
         called["set_cursor"] = a[0] if a else k.get("ts_ms")
 
+    ac._limit = lambda name, fallback=1: 150  # 门槛可配：显式 150 还原旧行为
     mjc.scan.locked = lambda: False
     mjc.scan.newest_candidate = lambda: (cand, "sess-1")
     mjc.scan._cursor = lambda: 1000  # 旧 cursor 更小 → 有新稿
     mjc.scan.set_cursor = _noop
-    mjc.scan.set_lock = lambda: None
+    mjc.scan.set_lock = lambda: called.__setitem__("lock", True)
     args = SimpleNamespace(force=False, no_memory=True)
     code = cmd_scan(args)
-    assert code == 0 and called.get("set_cursor") == 9999, called
-    print("  ✅ cmd_scan：<150 且非 force → 推进 cursor、skip too_short、不锁")
+    assert code == 0 and called.get("set_cursor") == 9999 and not called.get("lock"), called
+    print("  ✅ cmd_scan：低于可配门槛 → 推进 cursor、skip too_short、不锁")
+
+
+def test_cmd_scan_short_reviewed():
+    cand = {"ts_ms": 9999, "ts": "2026-09-06T10:00:00", "content": "短" * 60, "id": "e1"}
+    state = {"lock": 0, "cursor": None, "reviewed": None, "min_len": None}
+
+    def _fake_review(content, **kw):
+        state["reviewed"] = content
+        state["min_len"] = kw.get("min_len")
+        return 0, {"reviewed": True}
+
+    ac._limit = lambda name, fallback=1: 1  # 全量介入
+    mjc.scan.locked = lambda: False
+    mjc.scan.newest_candidate = lambda: (cand, "sess-1")
+    mjc.scan._cursor = lambda: 1000
+    mjc.scan.set_lock = lambda: state.__setitem__("lock", state["lock"] + 1)
+    mjc.scan.set_cursor = lambda ts_ms: state.__setitem__("cursor", ts_ms)
+    ac.auto_review = _fake_review
+    args = SimpleNamespace(force=False, no_memory=True)
+    code = cmd_scan(args)
+    assert code == 0 and state["lock"] == 1 and state["cursor"] == 9999, state
+    assert state["reviewed"] == cand["content"] and state["min_len"] == 1, state
+    print("  ✅ cmd_scan：全量介入（门槛=1）→ 短内容也送审")
 
 
 def test_cmd_scan_full_path():
     cand = {"ts_ms": 9999, "ts": "2026-09-06T10:00:00", "content": "长终稿内容" * 60, "id": "e1"}
     state = {"lock": 0, "cursor": None, "reviewed": None}
 
+    ac._limit = lambda name, fallback=1: 1
     mjc.scan.locked = lambda: False
     mjc.scan.newest_candidate = lambda: (cand, "sess-1")
     mjc.scan._cursor = lambda: 1000
@@ -158,7 +203,7 @@ def test_cmd_scan_full_path():
     code = cmd_scan(args)
     assert code == 0, code
     assert state["lock"] == 1 and state["cursor"] == 9999 and state["reviewed"] == cand["content"], state
-    print("  ✅ cmd_scan：≥150 → set_lock → auto_review(content) → 推进 cursor")
+    print("  ✅ cmd_scan：长终稿 → set_lock → auto_review(content) → 推进 cursor")
 
 
 def test_dedupe_same_sha_kind_skips():
@@ -194,12 +239,15 @@ def test_dedupe_same_sha_kind_skips():
 def main():
     print("== autocheck 离线测试（零 API）==")
     test_too_short()
+    test_no_reply_and_nontext_skipped()
+    test_default_full_intervention_reviews_short()
     test_kind_code_default_task()
     test_kind_message_default_task()
     test_reject_writes_findings()
     test_revise_no_findings()
     test_cmd_auto_stdin_content()
-    test_cmd_scan_too_short_branch()
+    test_cmd_scan_below_threshold_skips()
+    test_cmd_scan_short_reviewed()
     test_cmd_scan_full_path()
     test_dedupe_same_sha_kind_skips()
     print("== autocheck 全部通过 ✅ ==")

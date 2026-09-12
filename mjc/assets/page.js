@@ -1,17 +1,82 @@
-/* MJC v0.4.0 — 可读实时任务流 + 玻璃拟态 */
+/* MJC v0.5.0 — 总开关 + 动效升级（spotlight / 弹性缓动 / 数字滚动 / 视图过渡） */
 window.onerror=function(msg,src,line){var e=document.getElementById('errbar');if(e){e.style.display='block';e.textContent='❌ 页面脚本错误: '+msg+' (行 '+line+') —— 请把此文字发给小爪';}}
 const $=id=>document.getElementById(id);
 let STATE=null;
 let _sel=null;
 
 function tab(n){
-  ['pg-review','pg-tasks','pg-admin'].forEach(p=>{$(p).style.display='none';});
-  $('pg-'+n).style.display='';
-  ['tb-review','tb-tasks','tb-admin'].forEach(t=>{$(t).className=(t==='tb-'+n)?'on':'';});
-  if(n==='admin')loadState();
-  if(n==='tasks'){renderTaskList();renderTaskDetail();}
+  const apply=()=>{
+    ['pg-review','pg-tasks','pg-admin'].forEach(p=>{$(p).style.display='none';});
+    const sec=$('pg-'+n);sec.style.display='';
+    sec.classList.remove('anim-in');void sec.offsetWidth;sec.classList.add('anim-in');
+    ['tb-review','tb-tasks','tb-admin'].forEach(t=>{$(t).className=(t==='tb-'+n)?'on':'';});
+    segThumb();
+    if(n==='admin')loadState();
+    if(n==='tasks'){renderTaskList();renderTaskDetail();}
+  };
+  if(document.startViewTransition&&!matchMedia('(prefers-reduced-motion: reduce)').matches){
+    try{document.startViewTransition(apply);return;}catch(e){}
+  }
+  apply();
 }
 function esc(s){return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
+/* ---- 动效工具：spotlight 跟随 / 数字滚动 / 弹性分段 thumb ---- */
+let _spCard=null,_spX=0,_spY=0,_spPend=false;
+document.addEventListener('pointermove',e=>{
+  const c=e.target&&e.target.closest?e.target.closest('.card'):null;if(!c)return;
+  _spCard=c;_spX=e.clientX;_spY=e.clientY;
+  if(_spPend)return;_spPend=true;
+  requestAnimationFrame(()=>{
+    _spPend=false;
+    if(!_spCard||document.body.classList.contains('lite'))return;
+    const r=_spCard.getBoundingClientRect();
+    _spCard.style.setProperty('--mx',(_spX-r.left)+'px');
+    _spCard.style.setProperty('--my',(_spY-r.top)+'px');
+  });
+},{passive:true});
+function fmtNum(n,dec){n=Number(n)||0;return dec?(Math.round(n*100)/100+''):Math.round(n).toLocaleString('en-US');}
+function countUp(el,to,dur,dec){
+  if(!el)return;dur=dur||800;to=Number(to)||0;
+  const from=Number(el.dataset.v||0)||0;el.dataset.v=to;
+  if(from===to){el.textContent=fmtNum(to,dec);return;}
+  const t0=performance.now();
+  (function f(t){const p=Math.min(1,(t-t0)/dur),e=1-Math.pow(1-p,3);
+    el.textContent=fmtNum(from+(to-from)*e,dec);
+    if(p<1)requestAnimationFrame(f);})(t0);
+}
+function segThumb(){
+  const seg=document.querySelector('.seg'),th=document.getElementById('seg-thumb'),on=seg&&seg.querySelector('button.on');
+  if(!seg||!th||!on)return;
+  const sr=seg.getBoundingClientRect(),br=on.getBoundingClientRect();
+  th.style.left=(br.left-sr.left)+'px';th.style.width=br.width+'px';
+}
+window.addEventListener('resize',segThumb);
+function toggleLite(){
+  const on=document.body.classList.toggle('lite');
+  try{localStorage.setItem('mjc_lite',on?'1':'0');}catch(e){}
+  const b=document.getElementById('lite-btn');
+  if(b)b.textContent=on?'✨ 完整效果':'🐢 轻量模式';
+}
+function initLite(){
+  let pref=null;
+  try{pref=localStorage.getItem('mjc_lite');}catch(e){}
+  let on=pref==='1';
+  if(pref===null){ /* 无人工偏好 → 自动探测软件渲染（VM/无 GPU）→ 默认轻量 */
+    try{
+      const c=document.createElement('canvas');
+      const gl=c.getContext('webgl')||c.getContext('experimental-webgl');
+      let r='';
+      if(gl){const ext=gl.getExtension('WEBGL_debug_renderer_info');
+        r=String((ext?gl.getParameter(ext.UNMASKED_RENDERER_WEBGL):gl.getParameter(gl.RENDERER))||'');}
+      on=!gl||/llvmpipe|softpipe|swiftshader|virtualbox|svga|software/i.test(r);
+    }catch(e){on=false;}
+  }
+  if(on){
+    document.body.classList.add('lite');
+    const b=document.getElementById('lite-btn');
+    if(b)b.textContent='✨ 完整效果';
+  }
+}
 function tok(){
   let t=localStorage.getItem('mjc_token')||'';
   if(!t){t=prompt('请输入访问 token（私聊小爪获取）:');if(t)localStorage.setItem('mjc_token',t);}
@@ -70,12 +135,12 @@ async function loadState(){
   try{STATE=await api('/api/state');}
   catch(e){errbar.textContent='❌ '+e.message;errbar.style.display='block';return;}
   errbar.style.display='none';
-  $('ver').textContent='v'+STATE.version+' · 缓存 '+STATE.cache_entries+' 条'+(STATE.version!=='0.4.1'?' · ⚠️ 页面非最新，请强刷':'');
+  $('ver').textContent='v'+STATE.version+' · 缓存 '+STATE.cache_entries+' 条'+(STATE.version!=='0.5.0'?' · ⚠️ 页面非最新，请强刷':'');
   const cur=STATE.current||{};
   $('tier-note').textContent='当前档位：'+(cur.tier_label||'');
   $('screen').checked=!!(cur.screen_enabled&&cur.screen_model);
   $('degrade').checked=!!cur.degrade;$('nocache').checked=!cur.cache;
-  renderTiers(cur);renderKeys();renderModels(cur);renderStatus(cur);
+  renderTiers(cur);renderKeys();renderModels(cur);renderStatus(cur);renderSwitch();
 }
 function renderTiers(cur){
   $('tiers').innerHTML='';
@@ -154,7 +219,40 @@ function renderModels(cur){
   $('cfg-degrade').checked=!!cur.degrade;
   $('cfg-cache').checked=!(cur.cache===false);
 }
-function renderStatus(){ $('st-cache').textContent=STATE.cache_entries+' 条（TTL 7 天）'; $('st-trust').textContent=STATE.trust||'（空）'; }
+function renderStatus(){
+  $('st-cache').textContent=STATE.cache_entries+' 条（TTL 7 天）';
+  $('st-trust').textContent=STATE.trust||'（空）';
+  const u=STATE.usage||{};
+  countUp($('st-num-reviews'),u.reviews||0);
+  countUp($('st-num-tokens'),u.tokens||0);
+  countUp($('st-num-cost'),u.cost_yuan||0,900,true);
+  countUp($('st-num-nonpass'),u.nonpass||0);
+}
+/* ---- 自动审查总开关 ---- */
+let _swBusy=false;
+function renderSwitch(){
+  const sw=(STATE&&STATE.auto_switch)||{enabled:true};
+  const cb=$('sw-auto');if(!cb)return;
+  cb.checked=!!sw.enabled;
+  const d=$('sw-desc');
+  const when=(sw.updated_at||'').replace('T',' ').slice(0,16);
+  d.innerHTML=sw.enabled
+    ?'<span class="badge ok">运行中</span> hook 对每条消息自动扫描质检'
+      +(when?' <span class="tiny">· 上次变更 '+esc(when)+' by '+esc(sw.by||'?')+'</span>':'')
+    :'<span class="badge warn">已暂停</span> 不点火、0 花费、完全静音'
+      +(when?' <span class="tiny">· '+esc(when)+' by '+esc(sw.by||'?')+'</span>':'');
+}
+async function toggleSwitch(){
+  if(_swBusy)return;_swBusy=true;
+  const cb=$('sw-auto'),want=cb.checked;
+  $('sw-desc').textContent=want?'恢复中…':'暂停中…';
+  try{
+    const r=await api('/api/admin/switch',{method:'POST',body:JSON.stringify({enabled:want})});
+    STATE.auto_switch=r.auto_switch;renderSwitch();
+  }catch(e){
+    cb.checked=!want;$('sw-desc').innerHTML='❌ '+esc(e.message);
+  }finally{_swBusy=false;}
+}
 async function applyCfg(patch){
   $('cfg-msg').textContent='保存中…';
   try{
@@ -365,3 +463,7 @@ function liveLoop(){
 }
 liveLoop();
 loadState();
+initLite();
+segThumb();
+setTimeout(segThumb,350);
+(function(){const el=document.getElementById('sw-auto');if(el)el.addEventListener('change',toggleSwitch);})();

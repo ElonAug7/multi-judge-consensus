@@ -9,7 +9,7 @@ MJC · cli.py — 命令行调试界面
   python3 -m mjc.cli webui                                   # 启动本地 Web 界面（默认 127.0.0.1:8123）
 
 Phase 3 成本优化（均可在 review/judge-only 上生效）：
-  P3.1 初筛   review 默认开（--no-screen 关闭；模型 MJC_SCREEN_MODEL 或 --screen-model）
+  P3.1 初筛   review/judge 可配（--no-screen 关闭；模型 MJC_SCREEN_MODEL 或 --screen-model）；gate 也支持 --no-screen 强制委员会全量
   P3.2 缓存   默认开（--no-cache 关闭；命中零 API 调用）
   P3.3 降级   --degrade 开启（连续一致≥5 次的 Judge 本轮降频，分歧自动升级回委员会）
 
@@ -33,6 +33,7 @@ from mjc.arbiter import Arbiter, ParallelArbiter, parallel_review, append_debate
 from mjc.paths import BASE_DIR, LOG_DIR, TRUST_PATH, AUTO_LOG_DIR
 # P3 拆分：自动审查移入 autocheck.py（顶层再导出 → 旧 import 不破）
 from mjc.autocheck import auto_review, cmd_auto, cmd_scan
+from mjc.autoswitch import cmd_switch
 # 三票池（Phase 2 定案）：deepseek-v4-flash + glm-4-flash（便宜）+ glm-4-plus（精审）
 DEFAULT_POOL = ("deepseek:deepseek-v4-flash", "glm:glm-4-flash", "glm:glm-4-plus")
 
@@ -54,8 +55,17 @@ def cmd_doctor(args=None):
         print(f"  初筛: {'开' if cur.get('screen_enabled') else '关'} "
               f"(model={cur.get('screen_model') or '—'}, conf={cur.get('screen_conf')})")
         print(f"  降级: {cur.get('degrade')} | 缓存: {cur.get('cache')}")
+        _lim = st.get("limits") or {}
+        print(f"  长度门槛: gate={_lim.get('gate')} / auto={_lim.get('auto')} / scan={_lim.get('scan')}（字符，1≈全量送审）")
     except Exception as e:
         print(f"\n⚠️ 后台设置读取失败: {e}")
+    try:
+        from mjc import autoswitch as _asw
+        _sw = _asw.state()
+        print("\n自动审查开关: " + ("开" if _sw["enabled"] else "关（已暂停）")
+              + (f" · {_sw['updated_at']} by {_sw['by']}" if _sw.get("updated_at") else ""))
+    except Exception:
+        pass
     print(f"\n信任分（{TRUST_PATH}）:")
     print(trust.describe(path=TRUST_PATH))
     print(f"审查缓存条目: {cache.count()}")
@@ -321,8 +331,9 @@ def cmd_setup(args):
 
 def cmd_gate(args):
     """阶段闸门（P1 实时）：设计/写码/交付检查点审查。
+    默认：直接委员会全量（不过初筛）+ 事实仲裁（非 pass 时对事实类意见独立复核）。
     事件写 live 流（WebUI 实时动画）；裁决 pass→0 / revise→2 / reject·need_human→3 / 错误→1。
-    用法：python3 -m mjc.cli gate --stage deliver --task "<原始任务>" --content "<产物文本>" [--id mytask]"""
+    用法：python3 -m mjc.cli gate --stage deliver --task "<原始任务>" --content "<产物文本>" [--id mytask] [--screen] [--no-arbitrate]"""
     import datetime
     import hashlib
     from mjc import autocheck, live
@@ -335,9 +346,16 @@ def cmd_gate(args):
     stage = args.stage or "deliver"
     live.append("stage_start", tid, stage=stage, task=task[:200])
     try:
+        from mjc import settings as _st
+        _min_len = _st.limit("gate")
+    except Exception:
+        _min_len = 1
+    try:
         code, out = autocheck.auto_review(
             content, channel=f"gate:{stage}", task=task, kind="code",
-            no_memory=args.no_memory, min_len=20,
+            no_memory=args.no_memory, min_len=_min_len,
+            no_screen=not bool(getattr(args, "screen", False)),
+            arbitrate=not bool(getattr(args, "no_arbitrate", False)),
             emit=lambda ev: live.append(ev["kind"], tid,
                                         **{k: v for k, v in ev.items() if k not in ("kind", "ts_ms", "at", "task_id")}),
             task_id=tid,
@@ -450,11 +468,18 @@ def main():
     p_gate.add_argument("--content", required=True)
     p_gate.add_argument("--id", default=None, help="任务会话 id（默认 task+stage 哈希）")
     p_gate.add_argument("--no-memory", action="store_true")
+    p_gate.add_argument("--screen", action="store_true", help="启用初筛快速通道（默认：交付闸门直走委员会全量）")
+    p_gate.add_argument("--no-screen", action="store_true", help="（兼容保留；交付闸门默认即委员会全量）")
+    p_gate.add_argument("--no-arbitrate", action="store_true", help="关闭事实仲裁（默认开启：非 pass 时对事实类意见独立复核）")
     p_gate.set_defaults(fn=cmd_gate)
 
     p_dispose = sub.add_parser("dispose", help="记录审查意见处置（主 agent 逐条答复）→ dispositions.jsonl（WebUI 纠正过程可视化）")
     p_dispose.add_argument("--in", dest="in_file", required=True, help="JSON 文件 {entry, decisions:[{idx,adopted,action?,note}]}")
     p_dispose.set_defaults(fn=cmd_dispose)
+
+    p_switch = sub.add_parser("switch", help="自动审查总开关：on/off/status（暂停后 hook 扫描完全静音、0 花费）")
+    p_switch.add_argument("action", nargs="?", default="status", choices=["on", "off", "status"])
+    p_switch.set_defaults(fn=cmd_switch)
 
     p_mcp = sub.add_parser("mcp", help="MCP stdio 服务器（Claude/Cursor 等客户端接入）")
     p_mcp.set_defaults(fn=cmd_mcp)

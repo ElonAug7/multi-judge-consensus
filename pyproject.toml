@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "multi-judge-consensus"
-version = "0.4.1"
+version = "0.6.0"
 description = "多模型共识审查框架：跨厂商国产大模型委员会交叉审查 Agent 输出，结构化投票+辩论压制幻觉（零第三方依赖）"
 readme = "README.md"
 requires-python = ">=3.9"

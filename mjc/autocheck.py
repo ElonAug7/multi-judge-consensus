@@ -5,13 +5,15 @@ MJC · autocheck.py — 自动审查（auto_review / cmd_auto / cmd_scan）
 P3 结构拆分：自 mjc.cli 移出。cli.py 保持薄壳，顶层再导出本模块符号（旧 import 不破）。
   auto_review  内容+记忆 → 初筛/委员会 → logs/auto/{day}.jsonl（hook 转录扫描 / 代码交付工作流）；
                同 sha+同 kind 内容 6h 内已审 → 跳过（当日日志尾 100 行比对，P4.2 去重）
+               长度门槛读 settings.limits（gate/auto/scan，默认 1 ≈ 全量；NO_REPLY/纯符号跳过）
   cmd_auto     CLI auto 子命令实现（argparse 接线仍在 cli.main）
-  cmd_scan     转录扫描（webchat 触发源）：找最新未审终稿 → auto_review
+  cmd_scan     转录扫描（webchat 触发源）：找最新未审终稿 → auto_review（受 autoswitch 总开关门控：pause 时早退）
 """
 import datetime
 import hashlib
 import json
 import os
+import re
 import sys
 import time
 
@@ -19,12 +21,59 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from mjc.judge import build_pool
 from mjc import pipeline
+from mjc import autoswitch
 from mjc.paths import LOG_DIR, AUTO_LOG_DIR
 
 # 同 sha（+同 kind）内容 N 小时内去重：读当日审查日志尾 100 行比对（P4.2）
 DEDUPE_H = 6
 DEDUPE_TAIL = 100
 DEDUPE_TAIL_BYTES = 64 * 1024
+
+
+def _limit(name, fallback=1):
+    """审查长度门槛：settings.limits 可配（gate/auto/scan），读不到则 fallback。"""
+    try:
+        from mjc import settings
+        return int(settings.limit(name))
+    except Exception:
+        return fallback
+
+
+FACT_ISSUE_TYPES = ("factual_error", "hallucination")
+
+
+def _collect_arb_issues(record):
+    """从审查记录收集事实类意见（同 desc/sug 去重；judge_ids=全部申诉人，仲裁排除用）。"""
+    merged, order = {}, []
+    for rnd in (record.get("rounds") or []):
+        for o in (rnd.get("opinions") or []):
+            for i in (o.get("issues") or []):
+                t = (i.get("type") or "").lower()
+                if t not in FACT_ISSUE_TYPES:
+                    continue
+                desc = (i.get("description") or "").strip()
+                sug = (i.get("suggestion") or "").strip()
+                if not desc:
+                    continue
+                key = (desc[:120], sug[:80])
+                if key not in merged:
+                    merged[key] = {"judge_id": o.get("judge_id") or "", "judge_ids": [],
+                                   "type": t, "desc": desc[:200], "sug": sug[:150]}
+                    order.append(key)
+                jid = o.get("judge_id") or ""
+                if jid and jid not in merged[key]["judge_ids"]:
+                    merged[key]["judge_ids"].append(jid)
+    return [merged[k] for k in order]
+
+
+def _arbitrate(task, content, issues, timeout=90):
+    """非 pass 时对事实类意见做独立仲裁（mjc.factcheck）；失败返回 None（不阻塞主流程）。"""
+    try:
+        from mjc import factcheck
+        r = factcheck.arbitrate_issues(task, content, issues, timeout=timeout)
+        return r if isinstance(r, dict) else None
+    except Exception:
+        return None
 
 
 def _tail_lines(path, n=DEDUPE_TAIL):
@@ -68,14 +117,23 @@ def _recent_duplicate(sha, kind, hours=DEDUPE_H):
 
 
 def auto_review(content, channel="?", task=None, no_memory=False, kind="message", verbose=False,
-              emit=None, task_id=None, min_len=80):
+              emit=None, task_id=None, min_len=None, no_screen=False, screen_override=None,
+              arbitrate=True):
     """自动审查核心（供 cmd_auto 与 cmd_scan 复用）。返回 (exit_code, summary_dict)。
-    kind: message（回复文本）| code（代码任务收尾审查，交付前用）"""
+    kind: message（回复文本）| code（代码任务收尾审查，交付前用）
+    min_len=None → 读 settings.limits.auto（默认 1，≈全量送审）；no_screen 强制跳过初筛。
+    arbitrate=True：非 pass 时对“事实类意见”做独立仲裁（factcheck）并写入日志/输出。"""
     content = (content or "").strip()
     channel = channel or "?"
     kind = kind or "message"
+    if min_len is None:
+        min_len = _limit("auto")
     if len(content) < min_len:
         return 0, {"skipped": "too_short", "len": len(content)}
+    if content in ("NO_REPLY", "HEARTBEAT_OK"):
+        return 0, {"skipped": "no_reply", "len": len(content)}
+    if not re.search(r"\w", content):
+        return 0, {"skipped": "no_text", "len": len(content)}
     sha = hashlib.sha1(content.encode()).hexdigest()[:10]
     dup_ts = _recent_duplicate(sha, kind)
     if dup_ts:
@@ -102,7 +160,9 @@ def auto_review(content, channel="?", task=None, no_memory=False, kind="message"
             vissues = []
         if not vissues:
             return 1, {"error": pool_err}
-    screen_j = pipeline.resolve_screen_judge(None) if len(pool) >= 2 else None
+    screen_j = None
+    if len(pool) >= 2 and not no_screen:
+        screen_j = pipeline.resolve_screen_judge(screen_override)
     # 记忆上下文（Mnemosyne 优先）
     facts, mem_meta = [], {"primary": "none", "attempted": [], "notes": "memctx 未启用"}
     if not no_memory:
@@ -133,6 +193,20 @@ def auto_review(content, channel="?", task=None, no_memory=False, kind="message"
         )
     except Exception as e:
         return 1, {"error": f"审查失败: {e}"}
+    arb_items, arb_calls = [], 0
+    if arbitrate and record.get("final") in ("revise", "reject", "need_human"):
+        fact_issues = _collect_arb_issues(record)
+        if fact_issues:
+            _arb = _arbitrate(task_text, content, fact_issues)
+            if _arb and not _arb.get("error"):
+                arb_items = _arb.get("items") or []
+                arb_calls = int(_arb.get("calls") or 0)
+                if arb_items and emit:
+                    try:
+                        from mjc import factcheck
+                        emit({"kind": "arbitration", **factcheck.summarize(arb_items)})
+                    except Exception:
+                        pass
     entry = {
         "ts": datetime.datetime.now().isoformat(timespec="seconds"),
         "kind": kind, "channel": channel, "len": len(content),
@@ -140,7 +214,7 @@ def auto_review(content, channel="?", task=None, no_memory=False, kind="message"
         "verdict": record["final"], "pass_votes": record.get("pass_votes"),
         "reject_votes": record.get("reject_votes"), "revise_votes": record.get("revise_votes"),
         "debate_rounds": record.get("debate_rounds", 0),
-        "api_calls": meta.get("api_calls", 0), "screened": meta.get("screened"),
+        "api_calls": meta.get("api_calls", 0) + arb_calls, "screened": meta.get("screened"),
         "screen_passed": meta.get("screen_passed"),
         "tokens": record.get("tokens"), "cost_yuan": record.get("cost_yuan"),
         "memory": mem_meta,
@@ -151,6 +225,7 @@ def auto_review(content, channel="?", task=None, no_memory=False, kind="message"
                     for rnd in (record.get("rounds") or [])
                     for o in (rnd.get("opinions") or [])
                     for i in (o.get("issues") or [])][:6],
+        "arbitration": arb_items,
     }
     day = datetime.date.today().isoformat()
     with open(os.path.join(AUTO_LOG_DIR, f"{day}.jsonl"), "a", encoding="utf-8") as f:
@@ -158,6 +233,12 @@ def auto_review(content, channel="?", task=None, no_memory=False, kind="message"
     out = {"reviewed": True, "kind": kind, "verdict": entry["verdict"], "api_calls": entry["api_calls"],
            "memory_source": mem_meta.get("primary"), "sha": entry["sha"],
            "len": entry["len"], "screened": entry["screened"]}
+    if arb_items:
+        try:
+            from mjc import factcheck
+            out["arbitration"] = factcheck.summarize(arb_items)
+        except Exception:
+            pass
     if record["final"] in ("reject", "need_human"):
         with open(os.path.join(AUTO_LOG_DIR, "findings.jsonl"), "a", encoding="utf-8") as f:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
@@ -190,6 +271,9 @@ def cmd_auto(args):
 
 def cmd_scan(args):
     """转录扫描自动审查（webchat 触发源）：找最新未审终稿 → auto_review。"""
+    if not autoswitch.is_enabled():  # 总开关：暂停时不点火（0 花费、完全静音）
+        print(json.dumps({"skipped": "paused_by_switch"}, ensure_ascii=False))
+        return 0
     from mjc import scan as scan_mod
     if scan_mod.locked():
         print(json.dumps({"skipped": "locked"}))
@@ -206,13 +290,16 @@ def cmd_scan(args):
     if cand["ts_ms"] <= cur:
         print(json.dumps({"skipped": "up_to_date", "candidate": cand["ts"]}))
         return 0
-    if not getattr(args, "force", False) and len(cand.get("content") or "") < 150:
+    forced = bool(getattr(args, "force", False))
+    min_len = _limit("scan")
+    if not forced and len(cand.get("content") or "") < min_len:
         scan_mod.set_cursor(cand["ts_ms"])
-        print(json.dumps({"skipped": "too_short"}))
+        print(json.dumps({"skipped": "too_short", "min_len": min_len}))
         return 0
     scan_mod.set_lock()
     channel = f"session:{sid}" if sid else "?"
-    code, out = auto_review(cand["content"], channel=channel, no_memory=getattr(args, "no_memory", False))
+    code, out = auto_review(cand["content"], channel=channel, no_memory=getattr(args, "no_memory", False),
+                            min_len=(0 if forced else min_len))
     scan_mod.set_cursor(cand["ts_ms"])
     out.update({"cursor": cand["ts"], "entry_id": cand.get("id")})
     print(json.dumps(out, ensure_ascii=False))

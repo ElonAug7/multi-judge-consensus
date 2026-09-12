@@ -8,6 +8,7 @@ MJC · webui.py — Web 界面（P4 起 = 审查台 + 后台管理）
              POST /api/admin/probe {provider} 或 {"provider":"all"}      连通性探测(1 次极小调用)
              POST /api/admin/apply {tier? committee? screen_enabled? screen_model?
                                     screen_conf? degrade? cache?}         改档位/委员会/开关 → 落盘
+             POST /api/admin/switch {enabled}                             自动审查总开关（暂停=hook 静音）
              GET  /api/health      {ok, version, providers, cache}
 安全：默认绑 127.0.0.1。非回环绑定必须设置 MJC_WEBUI_TOKEN（代码强制，红线）→ 页面 JS 弹窗要 token。
 零第三方依赖（仅标准库 http.server）。设置持久化：settings.json + keys.local.json（均 600）。
@@ -135,6 +136,8 @@ class Handler(BaseHTTPRequestHandler):
             self._admin_probe(req)
         elif self.path.startswith("/api/admin/apply"):
             self._admin_apply(req)
+        elif self.path.startswith("/api/admin/switch"):
+            self._admin_switch(req)
         else:
             self._send(404, {"error": "not found"})
 
@@ -230,6 +233,18 @@ class Handler(BaseHTTPRequestHandler):
             self._send(400, {"error": str(e)})
         except Exception as e:
             self._send(500, {"error": f"apply 失败: {e}"})
+
+    def _admin_switch(self, req):
+        """自动审查总开关：{"enabled": bool} 或缺省=查询。"""
+        try:
+            from mjc import autoswitch
+            if "enabled" in req:
+                st = autoswitch.set_enabled(bool(req.get("enabled")), by="webui")
+            else:
+                st = autoswitch.state()
+            self._send(200, {"ok": True, "auto_switch": st})
+        except Exception as e:
+            self._send(500, {"error": f"switch 失败: {e}"})
 
 
 def main(host=None, port=None):

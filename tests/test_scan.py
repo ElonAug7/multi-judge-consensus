@@ -4,10 +4,10 @@
 MJC · scan 转录扫描器离线测试（零 API，纯文件系统）
   python3 tests/test_scan.py
 
-覆盖（P2.3 + P4.1/P4.3）：
+覆盖（P2.3 + P4.1/P4.3 + 2026-09-12 全量介入）：
   - _parse_ts：Z 后缀 / 毫秒 / 带时区 / 垃圾输入
-  - newest_candidate：assistant 终稿提取（text≥150、无 toolCall）、user/短文本/工具中间步跳过、
-    多 session 取最新、36h 未改动文件跳过、字段（id/ts_ms/ts/content/len）+ session id
+  - newest_candidate：assistant 终稿提取（长度≥min_len（默认 1）、无 toolCall；NO_REPLY/纯符号跳过）、
+    user/工具中间步跳过、多 session 取最新、36h 未改动文件跳过、字段（id/ts_ms/ts/content/len）+ session id
   - find_new：无 cursor 首次初始化（不回溯）；cursor 损坏 → 自动重置 + 初始化 + scan-events.jsonl 事件；
     有新稿返回、无新稿 None
   - session 排除（P4.3）：cron/subagent/dreaming 等机器会话不入选（sessions.json 注册表 + 孤儿
@@ -112,7 +112,32 @@ def test_candidate_extraction():
         f.write("{not json\n")
     cand, sid = scan.newest_candidate()
     assert cand["id"] == "b1", cand
-    print("  ✅ newest_candidate：user/短文/toolCall 中间步/坏行跳过，多 session 取最新，字段完整")
+    # 显式 min_len 仍可按门槛过滤（兼容旧语义：高于现有文本长度 → 无候选）
+    cand, sid = scan.newest_candidate(min_len=len(LONG) + 1)
+    assert cand is None and sid is None, (cand, sid)
+    print("  ✅ newest_candidate：user/toolCall 中间步/坏行跳过，多 session 取最新，字段完整；min_len 可配")
+
+
+def test_default_full_intervention_short_and_placeholders():
+    root, sess, logs = _fresh_dirs()
+    t0 = datetime.now(timezone.utc) - timedelta(minutes=5)
+    # 短回复（旧 150 门槛会漏审）→ 默认（min_len=1）应入选
+    _write_session(sess, "s1.jsonl", [_line("s1-e1", "assistant", [_txt("好的，我修好了。")], t0)])
+    cand, sid = scan.newest_candidate()
+    assert cand is not None and cand["id"] == "s1-e1", (cand, sid)
+    # NO_REPLY / 纯符号：即使更新也不入选
+    _write_session(sess, "s1.jsonl",
+                   [_line("s1-e2", "assistant", [_txt("NO_REPLY")], t0 + timedelta(seconds=1))], mode="a")
+    cand, sid = scan.newest_candidate()
+    assert cand["id"] == "s1-e1", cand
+    _write_session(sess, "s1.jsonl",
+                   [_line("s1-e3", "assistant", [_txt("\U0001f99e\U0001f44c\u2705")], t0 + timedelta(seconds=2))], mode="a")
+    cand, sid = scan.newest_candidate()
+    assert cand["id"] == "s1-e1", cand
+    # 阈值仍可用参数控制：显式 150 → 短回复被过滤，无候选
+    cand2, _ = scan.newest_candidate(min_len=150)
+    assert cand2 is None, cand2
+    print("  ✅ 全量介入默认：短回复入选、NO_REPLY/纯符号跳过、min_len 可显式控制")
 
 
 def test_stale_file_skipped():
@@ -244,6 +269,7 @@ def main():
     print("== scan 转录扫描器离线测试（零 API）==")
     test_parse_ts()
     test_candidate_extraction()
+    test_default_full_intervention_short_and_placeholders()
     test_stale_file_skipped()
     test_find_new_cursor_flows()
     test_cursor_corrupt_autoreset()

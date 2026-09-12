@@ -8,6 +8,7 @@ MJC · settings.py — 后台管理配置层（P4：管理界面数据层）
   model_tags 模型目录 { "厂商:模型": {tag: 🥬白菜|💰平价|💎旗舰|未知, note} }
   tiers      档位预设 {id: {label, desc, committee, screen_enabled, screen_model, screen_conf, degrade, cache}}
   current    当前生效 {tier, 覆盖字段(可空)} —— 档位默认 + 覆盖
+  limits     审查长度门槛 {gate, auto, scan}（字符数；默认 1 ≈ 全量送审；0 = 不限）
   key_status key 连通性探测缓存 {provider: {ok, at, detail}}
 
 key 本体仍存 keys.local.json（600），由 providers.py 读取；本模块只提供增删改入口。
@@ -102,6 +103,7 @@ DEFAULT = {
     "current": {"tier": "standard",
                 "committee": None, "screen_enabled": None, "screen_model": None,
                 "screen_conf": None, "degrade": None, "cache": None},
+    "limits": {"gate": 1, "auto": 1, "scan": 1},
     "key_status": {},
 }
 
@@ -169,6 +171,20 @@ def effective(data=None):
     return out
 
 
+def limit(name, data=None):
+    """审查长度门槛（字符数）：gate=闸门 / auto=自动审查 / scan=转录扫描。
+    settings.limits 可覆盖；默认 1（≈全量送审，防短答被门槛绕过——2026-09-12 实验教训）。"""
+    d = data or load()
+    lim = d.get("limits") or {}
+    v = lim.get(name)
+    if v is None:
+        v = DEFAULT["limits"].get(name, 1)
+    try:
+        return max(0, int(v))
+    except (TypeError, ValueError):
+        return DEFAULT["limits"].get(name, 1)
+
+
 def apply(patch, data=None):
     """应用后台修改（patch 为 current 覆盖字段或 tier 名）。校验后落盘。"""
     d = data or load()
@@ -206,6 +222,15 @@ def apply(patch, data=None):
         cur["degrade"] = bool(patch["degrade"])
     if "cache" in patch and patch["cache"] is not None:
         cur["cache"] = bool(patch["cache"])
+    if "limits" in patch and patch["limits"] is not None:
+        lim = d.get("limits") or {}
+        for k, v in dict(patch["limits"]).items():
+            if k in ("gate", "auto", "scan") and v is not None:
+                try:
+                    lim[k] = max(0, int(v))
+                except (TypeError, ValueError):
+                    raise ValueError("limits 需为整数（字符数门槛）")
+        d["limits"] = lim
     save(d)
     return effective(d)
 
@@ -376,6 +401,37 @@ def _recent_dispositions(n=12):
         return []
 
 
+def _auto_switch_state():
+    """自动审查总开关状态（供管理台/doctor）。"""
+    try:
+        from mjc import autoswitch
+        return autoswitch.state()
+    except Exception as e:
+        return {"enabled": True, "updated_at": None, "by": f"error:{e}"}
+
+
+def _usage_summary():
+    """累计用量摘要（logs/usage.json；缺失 → 全 0）。"""
+    try:
+        from mjc.paths import LOG_DIR
+        import json as _json
+        p = os.path.join(LOG_DIR, "usage.json")
+        if os.path.exists(p):
+            u = _json.load(open(p, encoding="utf-8"))
+            return {"reviews": u.get("reviews", 0), "tokens": u.get("tokens", 0),
+                    "cost_yuan": u.get("cost_yuan", 0), "nonpass": u.get("nonpass", 0)}
+    except Exception:
+        pass
+    return {"reviews": 0, "tokens": 0, "cost_yuan": 0, "nonpass": 0}
+
+
+def _limits_merged(d):
+    """limits 视图：内置默认 + 用户覆盖（只认 gate/auto/scan 三个键）"""
+    lim = dict(DEFAULT["limits"])
+    lim.update({k: v for k, v in (d.get("limits") or {}).items() if k in lim})
+    return lim
+
+
 def admin_state(data=None):
     """给管理界面/doctor 的完整状态（不含明文 key）"""
     from mjc import cache, trust, providers
@@ -421,10 +477,13 @@ def admin_state(data=None):
         "providers": provs,
         "catalog": sorted(catalog.values(), key=lambda x: (x["provider"], x["model"])),
         "current": cur_eff,
+        "limits": _limits_merged(d),
         "tiers": {tid: {k: v for k, v in t.items() if k != "committee"} | {"committee": t["committee"]}
                   for tid, t in d["tiers"].items()},
         "cache_entries": cache.count(),
         "trust": trust.describe(path=TRUST_PATH),
         "dispositions": _recent_dispositions(),
+        "auto_switch": _auto_switch_state(),
+        "usage": _usage_summary(),
         "saved_at": os.path.getmtime(PATH) if os.path.exists(PATH) else None,
     }

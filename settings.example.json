@@ -162,5 +162,10 @@
   "degrade": null,
   "cache": null
  },
+ "limits": {
+  "gate": 1,
+  "auto": 1,
+  "scan": 1
+ },
  "key_status": {}
 }

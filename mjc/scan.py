@@ -4,7 +4,7 @@
 MJC · scan.py — 转录扫描器（webchat 替代 message:sent 的触发源）
 背景：本环境（webchat）不产生 message:sent 事件（memory-recorder 也靠转录补录）。
 方案：每次 message:received（用户消息/心跳）→ 扫 ~/.openclaw/agents/main/sessions/*.jsonl，
-找出"最新一条已完成的 assistant 终稿"（纯 text 块、≥150 字、时间戳 > cursor）→ 交 auto_review。
+找出"最新一条已完成的 assistant 终稿"（纯 text 块、长度 ≥ min_len（默认 1 ≈ 全量；NO_REPLY/纯符号跳过）、时间戳 > cursor）→ 交 auto_review。
 状态：logs/auto/.cursor.json（最近已处理条目的 ISO 时间戳）；logs/auto/.scan-lock（60s 频率锁）。
 首次运行（无 cursor）只初始化不审查，避免回溯轰炸历史回复。
 cursor 损坏/非法 → 自动重置（视同首次）+ 记事件日志 logs/auto/scan-events.jsonl。
@@ -15,6 +15,7 @@ sessions.json 条目会随任务清理但转录文件保留（真实目录 50 �
 """
 import json
 import os
+import re
 import time
 from datetime import datetime
 
@@ -24,7 +25,7 @@ LOG_DIR = os.path.join(WS, "multi-judge-consensus", "logs", "auto")
 CURSOR = os.path.join(LOG_DIR, ".cursor.json")
 LOCK = os.path.join(LOG_DIR, ".scan-lock")
 LOCK_MS = 60 * 1000
-MIN_LEN = 150
+MIN_LEN = 1  # 默认门槛（字符）：全量介入（2026-09-12 定）；settings.limits.scan 可覆盖（cmd_scan 传参）
 EVENTS_LOG = "scan-events.jsonl"
 
 
@@ -167,9 +168,11 @@ def set_cursor(ts_ms):
         pass
 
 
-def newest_candidate(min_len=MIN_LEN, max_age_h=36):
-    """所有 session 转录里最新的 assistant 终稿（含 text≥min_len、无 toolCall）。
+def newest_candidate(min_len=None, max_age_h=36):
+    """所有 session 转录里最新的 assistant 终稿（含 text≥min_len（None→MIN_LEN，默认 1）、无 toolCall）。
     返回 (entry, session_id) 或 (None, None)。只扫 36h 内有改动的文件。"""
+    if min_len is None:
+        min_len = MIN_LEN
     if not os.path.isdir(SESS_DIR):
         return None, None
     best, best_ts, best_sid = None, -1, None
@@ -207,6 +210,10 @@ def newest_candidate(min_len=MIN_LEN, max_age_h=36):
                     text = "".join((c.get("text") or "") for c in blocks if c.get("type") == "text").strip()
                     if len(text) < min_len:
                         continue
+                    if text in ("NO_REPLY", "HEARTBEAT_OK"):
+                        continue  # 非答复占位，不送审
+                    if not re.search(r"\w", text):
+                        continue  # 纯符号/表情，无实质内容
                     ts = _parse_ts(d.get("timestamp") or "")
                     if ts is None:
                         continue

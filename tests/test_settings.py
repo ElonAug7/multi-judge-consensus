@@ -4,9 +4,11 @@
 MJC · settings 层离线测试（零 API，mock providers.chat / has_key）
   python3 tests/test_settings.py
 
-覆盖（P1.4 + P2.1）：
+覆盖（P1.4 + P2.1 + 2026-09-12 修复）：
   - probe：TTL 缓存（5 分钟内复用 + force 跳过）、tried 长度截断折叠、错误分类 hint、无 key 短路
   - apply：committee 数组/字符串解析、screen_model 旧数组 bug 回归（列表→取首元素）、显式 null 语义
+  - limits：长度门槛默认 1（全量送审）、apply 合并/持久化、非法值回退
+  - 提示词回归：judge 含“前提核查/误判防线”（防幻觉漏检 + 防误杀）
   - set_key/clear_key：往返（临时目录 + monkeypatch PATH）、mask、自动探测触发
   - effective：按 key 过滤委员会、不足 2 个抛 ValueError、覆盖字段合并
 """
@@ -181,6 +183,31 @@ def test_effective_filter():
     print("  ✅ effective：按 key 过滤、覆盖合并、不足 2 抛错")
 
 
+def test_limits_config():
+    d = settings.load()
+    # 默认值：1 ≈ 全量送审（防短答被门槛绕过）
+    assert settings.limit("gate", d) == 1 and settings.limit("auto", d) == 1 and settings.limit("scan", d) == 1, \
+        (settings.limit("gate", d), settings.limit("auto", d), settings.limit("scan", d))
+    # apply 覆盖 + 持久化
+    settings.apply({"limits": {"gate": 5, "scan": 30}}, data=d)
+    assert settings.limit("gate", d) == 5 and settings.limit("scan", d) == 30 and settings.limit("auto", d) == 1
+    d2 = settings.load()
+    assert settings.limit("gate", d2) == 5, d2.get("limits")
+    # 负数 clamp 到 0；未知名忽略
+    settings.apply({"limits": {"gate": -3, "nope": 9}}, data=d)
+    assert settings.limit("gate", d) == 0 and "nope" not in (d.get("limits") or {})
+    # 非法类型 → 回退默认
+    d["limits"]["scan"] = "abc"
+    assert settings.limit("scan", d) == 1
+    print("  ✅ limits：默认 1、apply 合并/持久化、clamp、非法值回退")
+
+
+def test_judge_prompt_guards():
+    from mjc import judge
+    assert "前提核查" in judge.JUDGE_PROMPT and "误判防线" in judge.JUDGE_PROMPT
+    print("  ✅ judge 提示词：含前提核查 + 误判防线（2026-09-12 修复回归）")
+
+
 def test_set_key_clear_key_roundtrip():
     ok_chat, calls = _mk_chat({"deepseek-v4-flash": "pong"})
     old_chat = P.chat
@@ -226,6 +253,8 @@ def main():
     test_probe_no_key_short_circuit()
     test_apply_split_and_array_bug()
     test_effective_filter()
+    test_limits_config()
+    test_judge_prompt_guards()
     test_set_key_clear_key_roundtrip()
     print("== settings 层全部通过 ✅ ==")
 

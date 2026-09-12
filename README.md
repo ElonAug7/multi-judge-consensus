@@ -40,8 +40,20 @@ content
   ├─ ③ committee     3 models review independently and in parallel
   ├─ ④ arbiter       pure rule vote: ≥2/3 pass → pass; disagreement → debate
   ├─ ⑤ debate ≤2 rds each judge sees the others' opinions, may change verdict
-  └─ ⑥ verdict       result + token usage + cost estimate, fully logged
+  ├─ ⑥ factcheck     non-pass only: factual issues re-checked by independent, non-complainant judges
+  └─ ⑦ verdict       result + token usage + cost estimate, fully logged
 ```
+
+### Zero-hallucination design (v0.6.0)
+
+Detect → arbitrate → repair → re-check — engineered so the system never "fixes" a fact into a different error:
+
+- **Fact arbitration** (`mjc/factcheck.py`) — before any factual fix is attempted, the claim is independently
+  re-checked by non-complainant, cross-vendor models (`confirmed` / `refuted` / `unknown`). Only `confirmed`
+  replacements may touch specific facts; `refuted` means keep the original; `unknown` allows softening only.
+- **Revision rules** (`mjc/revision.py`) — the repairer must never introduce new specific facts; when in doubt,
+  hedge or soften instead of substituting a guess (reviewer suggestions are leads, not truth).
+- **Gate default = full committee** — deliverable gates skip the cheap screen by default (`--screen` to opt back in).
 
 **Tier presets** (one-click in the admin console):
 
@@ -105,6 +117,7 @@ Keys are read from environment variables (`MJC_DEEPSEEK_KEY`, `MJC_GLM_KEY`, `MJ
 | `gate --stage design\|code\|deliver --task --content` | stage gate; exit codes pass=0 / revise=2 / reject=3 |
 | `bench [--set quick\|v1-full] [--ablation 0,1,2]` | red-team benchmark with history |
 | `dispose --in <json>` | record per-issue dispositions (adopted / rejected with reason) |
+| `switch on\|off\|status` | pause/resume the auto-review hook (0 cost, fully silent; manual commands unaffected) |
 | `webui` | local admin console (127.0.0.1:8123) |
 | `mcp` | MCP stdio server |
 
@@ -138,7 +151,7 @@ mjc/
 ├── webui.py         admin console (review / live tasks / settings)
 ├── mcp_server.py    MCP stdio server
 └── settings.py      runtime config (provider registry, model catalog, tier presets)
-tests/               10 offline suites (0 API calls; key-dependent cases skip gracefully)
+tests/               13 offline suites (0 API calls; key-dependent cases skip gracefully)
 samples/bench-v1.json   adversarial benchmark corpus
 ```
 
@@ -148,7 +161,7 @@ samples/bench-v1.json   adversarial benchmark corpus
 python3 tests/test_phase3.py     # pipeline/cache/degradation
 python3 tests/test_verifier.py   # deterministic verifier
 python3 tests/test_mcp.py        # MCP protocol
-# …10 suites total, all offline. GitHub Actions runs them on Python 3.9/3.11/3.12.
+# …13 suites total, all offline. GitHub Actions runs them on Python 3.9/3.11/3.12.
 ```
 
 ## Security & notes
