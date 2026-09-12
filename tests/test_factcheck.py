@@ -183,6 +183,8 @@ def test_evidence_injection():
     """知识源启用时：检索片段注入仲裁提示（且不影响无源时的行为）"""
     from mjc import knowledge as _kb
     old_cb, old_budget = _kb.configured_backends, _kb.Budget
+    old_hk = providers.has_key
+    providers.has_key = lambda n: True  # 无 key 环境（CI）下需委员会可用
 
     class FakeBudget:
         def __init__(self, *a, **k):
@@ -214,6 +216,7 @@ def test_evidence_injection():
     finally:
         providers.chat = old_chat
         _kb.configured_backends, _kb.Budget = old_cb, old_budget
+        providers.has_key = old_hk
     print("  ✅ 知识源：检索片段注入仲裁提示 + 证据记录")
 
 

@@ -184,21 +184,26 @@ def test_effective_filter():
 
 
 def test_limits_config():
-    d = settings.load()
-    # 默认值：1 ≈ 全量送审（防短答被门槛绕过）
-    assert settings.limit("gate", d) == 1 and settings.limit("auto", d) == 1 and settings.limit("scan", d) == 1, \
-        (settings.limit("gate", d), settings.limit("auto", d), settings.limit("scan", d))
-    # apply 覆盖 + 持久化
-    settings.apply({"limits": {"gate": 5, "scan": 30}}, data=d)
-    assert settings.limit("gate", d) == 5 and settings.limit("scan", d) == 30 and settings.limit("auto", d) == 1
-    d2 = settings.load()
-    assert settings.limit("gate", d2) == 5, d2.get("limits")
-    # 负数 clamp 到 0；未知名忽略
-    settings.apply({"limits": {"gate": -3, "nope": 9}}, data=d)
-    assert settings.limit("gate", d) == 0 and "nope" not in (d.get("limits") or {})
-    # 非法类型 → 回退默认
-    d["limits"]["scan"] = "abc"
-    assert settings.limit("scan", d) == 1
+    old_hk = P.has_key
+    P.has_key = lambda n: True  # 无 key 环境（CI）下 apply→effective 需委员会可用
+    try:
+        d = settings.load()
+        # 默认值：1 ≈ 全量送审（防短答被门槛绕过）
+        assert settings.limit("gate", d) == 1 and settings.limit("auto", d) == 1 and settings.limit("scan", d) == 1, \
+            (settings.limit("gate", d), settings.limit("auto", d), settings.limit("scan", d))
+        # apply 覆盖 + 持久化
+        settings.apply({"limits": {"gate": 5, "scan": 30}}, data=d)
+        assert settings.limit("gate", d) == 5 and settings.limit("scan", d) == 30 and settings.limit("auto", d) == 1
+        d2 = settings.load()
+        assert settings.limit("gate", d2) == 5, d2.get("limits")
+        # 负数 clamp 到 0；未知名忽略
+        settings.apply({"limits": {"gate": -3, "nope": 9}}, data=d)
+        assert settings.limit("gate", d) == 0 and "nope" not in (d.get("limits") or {})
+        # 非法类型 → 回退默认
+        d["limits"]["scan"] = "abc"
+        assert settings.limit("scan", d) == 1
+    finally:
+        P.has_key = old_hk
     print("  ✅ limits：默认 1、apply 合并/持久化、clamp、非法值回退")
 
 
