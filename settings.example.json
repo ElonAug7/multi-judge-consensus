@@ -167,5 +167,15 @@
   "auto": 1,
   "scan": 1
  },
- "key_status": {}
+ "key_status": {},
+ "knowledge": {
+  "enabled": false,
+  "backends": [
+   "sogou",
+   "bing",
+   "baidu"
+  ],
+  "max_per_review": 3,
+  "timeout": 12
+ }
 }

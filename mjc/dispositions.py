@@ -31,6 +31,15 @@ def _review_summary(entry):
         "api_calls": entry.get("api_calls"),
         "memory_source": (entry.get("memory") or {}).get("primary"),
         "issues": entry.get("issues", []),
+        "arbitration": [{"outcome": a.get("outcome"),
+                          "desc": (a.get("desc") or "")[:160],
+                          "votes": [{"judge": v.get("judge"),
+                                     "my_answer": str(v.get("my_answer") or "")[:60],
+                                     "original_wrong": v.get("original_wrong"),
+                                     "suggestion_correct": v.get("suggestion_correct"),
+                                     "error": (v.get("error") or "")[:80]}
+                                    for v in (a.get("votes") or [])]}
+                         for a in (entry.get("arbitration") or [])][:4],
         "task": (entry.get("task") or "")[:200],
         "len": entry.get("len"),
     }

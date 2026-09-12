@@ -57,6 +57,12 @@ def cmd_doctor(args=None):
         print(f"  降级: {cur.get('degrade')} | 缓存: {cur.get('cache')}")
         _lim = st.get("limits") or {}
         print(f"  长度门槛: gate={_lim.get('gate')} / auto={_lim.get('auto')} / scan={_lim.get('scan')}（字符，1≈全量送审）")
+        try:
+            from mjc import knowledge as _kb
+            _bks = _kb.configured_backends()
+            print(f"  知识源: {','.join(_bks) if _bks else 'off'}（事实核查证据检索）")
+        except Exception:
+            pass
     except Exception as e:
         print(f"\n⚠️ 后台设置读取失败: {e}")
     try:
@@ -381,6 +387,28 @@ def cmd_gate(args):
     return 1
 
 
+def cmd_evidence(args):
+    """外部知识源调试：mjc evidence --query "..." → 检索片段 JSON"""
+    from mjc import knowledge
+    if not knowledge.configured_backends():
+        print(json.dumps({"error": "知识源未启用（settings.knowledge.enabled / MJC_KNOWLEDGE）"}, ensure_ascii=False))
+        return 1
+    r = knowledge.fetch_evidence(args.query)
+    print(json.dumps(r or {"snippets": []}, ensure_ascii=False, indent=1))
+    return 0 if r else 2
+
+
+def cmd_repair(args):
+    """双生产者修订共识：不同厂商各自修订 → 一致才采纳（防单模型引入新错误）。"""
+    from mjc import repair as _rep
+    r = _rep.dual_revise(args.task, args.prev, args.feedback)
+    print(json.dumps({"mode": r.get("mode"), "applied": r.get("applied"), "note": r.get("note"),
+                      "revs": [{"spec": x.get("spec"), "error": x.get("error"),
+                                "len": len(x.get("text") or "")} for x in r.get("revs") or []]},
+                     ensure_ascii=False))
+    return 0 if r.get("mode") in ("agreed", "disagreed") else 1
+
+
 def cmd_dispose(args):
     """对一次 auto 审查的 issues 逐条记录处置（采纳/不采纳+理由）→ logs/auto/dispositions.jsonl。
     用法：--in <json>，内容 {entry: <auto 日文件行>, decisions: [{idx, adopted, action?, note}]}"""
@@ -461,6 +489,16 @@ def main():
 
     p_setup = sub.add_parser("setup", help="首次配置向导：录入 API key → 探测连通 → 可跑")
     p_setup.set_defaults(fn=cmd_setup)
+
+    p_ev = sub.add_parser("evidence", help="外部知识源检索（事实核查调试）")
+    p_ev.add_argument("--query", required=True)
+    p_ev.set_defaults(fn=cmd_evidence)
+
+    p_rep = sub.add_parser("repair", help="双生产者修订共识（不同厂商各自修订，一致才采纳）")
+    p_rep.add_argument("--task", required=True)
+    p_rep.add_argument("--prev", required=True)
+    p_rep.add_argument("--feedback", required=True)
+    p_rep.set_defaults(fn=cmd_repair)
 
     p_gate = sub.add_parser("gate", help="阶段闸门：设计/写码/交付检查点审查（实时事件流）——非 pass 退出码阻断")
     p_gate.add_argument("--stage", required=True, choices=["design", "code", "deliver"])

@@ -35,14 +35,17 @@ def _mk_chat(answers):
 
 
 def _ctx(answers):
-    """临时替换 providers.chat / has_key。返回 (fake, calls, restore)"""
-    old_chat, old_hk = providers.chat, providers.has_key
+    """临时替换 providers.chat / has_key；隔离外部知识源。返回 (fake, calls, restore)"""
+    from mjc import knowledge as _kb
+    old_chat, old_hk, old_cb = providers.chat, providers.has_key, _kb.configured_backends
     providers.has_key = lambda n: True
+    _kb.configured_backends = lambda: []  # 测试隔离：不打网络
     fake, calls = _mk_chat(answers)
     providers.chat = fake
 
     def restore():
         providers.chat, providers.has_key = old_chat, old_hk
+        _kb.configured_backends = old_cb
 
     return fake, calls, restore
 
@@ -176,6 +179,44 @@ def test_multi_claimant_exclusion():
     print("  ✅ 单人面板：单票 yes 不构成 confirmed（只能否证/存疑）")
 
 
+def test_evidence_injection():
+    """知识源启用时：检索片段注入仲裁提示（且不影响无源时的行为）"""
+    from mjc import knowledge as _kb
+    old_cb, old_budget = _kb.configured_backends, _kb.Budget
+
+    class FakeBudget:
+        def __init__(self, *a, **k):
+            self.used = 0
+
+        def take(self, q, backends=None):
+            self.used += 1
+            return {"backend": "fake", "query": q,
+                    "snippets": [{"title": "t", "url": "", "text": "据某 blog：V2Ray 由 Victoria Raymond 开发。"}]}
+
+    _kb.configured_backends = lambda: ["fake"]
+    _kb.Budget = FakeBudget
+    prompts = []
+
+    def fake(name, messages, model=None, **kw):
+        prompts.append(messages[0]["content"])
+        return '{"my_answer":"Victoria Raymond","original_wrong":"no","suggestion_correct":"no","note":"ok"}'
+
+    old_chat = providers.chat
+    providers.chat = fake
+    try:
+        r = factcheck.arbitrate_issues("V2Ray原作者是谁？", "V2Ray原作者是Victoria Raymond。", [
+            {"judge_ids": ["glm:glm-4-flash"], "type": "factual_error", "desc": "应为 Allan", "sug": "改为 Allan"}],
+            committee=COMMITTEE)
+        it = r["items"][0]
+        assert it["outcome"] == "refuted", it
+        assert it.get("evidence", {}).get("backend") == "fake", it
+        assert any("外部检索片段" in p and "Victoria Raymond 开发" in p for p in prompts), "evidence 未注入提示"
+    finally:
+        providers.chat = old_chat
+        _kb.configured_backends, _kb.Budget = old_cb, old_budget
+    print("  ✅ 知识源：检索片段注入仲裁提示 + 证据记录")
+
+
 def main():
     print("== factcheck 事实仲裁离线测试（零 API）==")
     test_confirmed_and_arbiter_selection()
@@ -184,6 +225,7 @@ def main():
     test_unknown_and_error_votes()
     test_dedupe_and_cap()
     test_multi_claimant_exclusion()
+    test_evidence_injection()
     print("== factcheck 全部通过 ✅ ==")
 
 

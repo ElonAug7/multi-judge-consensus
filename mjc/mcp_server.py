@@ -16,7 +16,7 @@ import sys
 from mjc import pipeline, settings
 from mjc.judge import build_pool
 
-VERSION = "0.6.0"
+VERSION = "0.7.0"
 PROTOCOL = "2024-11-05"
 TOOLS = [{
     "name": "review",

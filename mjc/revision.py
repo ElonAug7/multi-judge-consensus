@@ -31,7 +31,7 @@ def build_messages(task, prev, feedback, extra_rules=""):
 
 
 def arbitration_note(items):
-    """把仲裁结果转成给修订者的提示文本：只强调“未确认的不得替换”。"""
+    """把仲裁结果转成给修订者的提示文本：只强调“未确认的不得替换”，并展示仲裁员独立答案。"""
     if not items:
         return ""
     lines = ["【事实仲裁结果】（独立复核，供参考）"]
@@ -44,5 +44,14 @@ def arbitration_note(items):
             tag = "已否证（该审查意见不成立，务必保留原内容）"
         else:
             tag = "未确认（不得据此替换具体事实，仅可弱化表述）"
-        lines.append(f"- [{tag}] {desc}")
+        extra = ""
+        answers = [v.get("my_answer") for v in (it.get("votes") or [])
+                   if v.get("my_answer") and v.get("my_answer") not in ("不确定", "unknown", "?")]
+        if answers:
+            uniq = []
+            for a in answers:
+                if a not in uniq:
+                    uniq.append(a)
+            extra = "（仲裁员独立答案：" + "；".join(uniq[:2]) + "）"
+        lines.append(f"- [{tag}] {desc}{extra}")
     return "\n".join(lines)

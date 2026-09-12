@@ -396,6 +396,13 @@ function renderTaskDetail(){
         +(ev.tokens?' · tokens '+esc(ev.tokens)+' ≈¥'+esc(ev.cost_yuan??''):'')+'</span></div>';
       return;
     }
+    if(k==='arbitration'){
+      closePhase();
+      html+='<div class="ph" style="margin-top:.6rem"><span class="phn">⚖️ 事实仲裁</span>'
+        +'<span class="badge '+(ev.confirmed>0?'ok':'warn')+'">复核 '+esc(ev.n??0)+' 条</span>'
+        +'<span class="muted">confirmed '+esc(ev.confirmed??0)+' · refuted '+esc(ev.refuted??0)+' · unknown '+esc(ev.unknown??0)+' —— 仅 confirmed 才允许替换具体事实</span></div>';
+      return;
+    }
     if(k==='stage_done'){
       closePhase();
       html+='<div class="ph" style="margin-top:.6rem"><span class="phn">✅ 闸门 '+esc(ev.stage||'')+'</span>'+vBadge(ev.verdict)
@@ -419,6 +426,16 @@ function renderTaskDetail(){
           +(dc.note?'<div class="iss muted">理由：'+esc(dc.note)+'</div>':'')
           +'</div></div>';
       });
+      const arb=(d.review&&d.review.arbitration)||[];
+      if(arb.length){
+        html+='<div class="jrow"><div class="who"><span>⚖️ 仲裁复核</span><span class="role">独立仲裁 · 排除申诉人</span></div><div>';
+        arb.forEach(a=>{
+          const oc=a.outcome||'unknown';
+          const cls=oc==='confirmed'?'ok':(oc==='refuted'?'idle':'warn');
+          html+='<div class="iss"><span class="badge '+cls+'">'+esc(oc)+'</span> '+esc((a.desc||'').slice(0,110))+'</div>';
+        });
+        html+='</div></div>';
+      }
     });
   }
   html+='<div class="muted" style="margin-top:.9rem">事件流 · logs/auto/live.jsonl · 自动每 2 秒刷新</div>';

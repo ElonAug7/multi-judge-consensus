@@ -27,7 +27,7 @@ ARB_PROMPT = """你是独立仲裁员，负责复核另一位审查员的“事�
 
 【审查员声明】原内容问题：{desc}
 【审查员建议】{sug}
-
+{evidence_section}
 请**先**独立回答（不看审查员结论）：
 步骤一：就声明中涉及的争议点，你独立认为的正确答案是什么？（不确定就写“不确定”，严禁猜测）
 然后输出严格 JSON（不要 markdown 代码块、不要多余文字）：
@@ -103,6 +103,16 @@ def _pick_arbiters(committee, exclude_specs, k=2):
     return build_pool(picks), picks
 
 
+def _evidence_section(ev):
+    """外部检索片段 → 提示段（可能低质，明示只作线索）"""
+    if not ev or not (ev.get("snippets")):
+        return ""
+    lines = [f"【外部检索片段】（{ev.get('backend', '?')}；可能不相关/低质，仅作线索——不得因检索结果盲信，也不得因检索不到就断定对错）"]
+    for i, s in enumerate((ev.get("snippets") or [])[:4], 1):
+        lines.append(f"{i}. {str(s.get('text', ''))[:300]}")
+    return "\n".join(lines) + "\n"
+
+
 def arbitrate_issues(task, content, issues, committee=None, timeout=90, max_issues=3):
     """issues: [{judge_id, type, desc, sug}]（调用方已过滤事实类）。
     返回 {"items": [{...issue, outcome, votes}], "calls": N}；基础设施异常 → {"error": ...} 不抛出。"""
@@ -112,6 +122,13 @@ def arbitrate_issues(task, content, issues, committee=None, timeout=90, max_issu
         except Exception as e:
             return {"error": f"委员会不可用: {e}", "items": [], "calls": 0}
     items, calls = [], 0
+    kb_budget = None
+    try:  # 外部知识源（默认 off；配置后启用；预算受限）
+        from mjc import knowledge
+        if knowledge.configured_backends():
+            kb_budget = knowledge.Budget()
+    except Exception:
+        kb_budget = None
     seen = set()
     for it in issues:
         if len(items) >= max_issues:
@@ -130,8 +147,16 @@ def arbitrate_issues(task, content, issues, committee=None, timeout=90, max_issu
                           "desc": desc[:200], "sug": (it.get("sug") or "")[:150],
                           "outcome": "unknown", "votes": [], "note": "无可用的独立仲裁模型"})
             continue
+        ev_used = None
+        if kb_budget:
+            try:
+                q = (it.get("query") or ((task or "")[:60] + " " + desc[:60])).strip()[:140]
+                ev_used = kb_budget.take(q)
+            except Exception:
+                ev_used = None
         prompt = ARB_PROMPT.format(task=(task or "")[:400], content=(content or "")[:800],
-                                   desc=desc[:300], sug=(it.get("sug") or "（无）")[:200])
+                                   desc=desc[:300], sug=(it.get("sug") or "（无）")[:200],
+                                   evidence_section=_evidence_section(ev_used))
         votes = []
         for j in judges:
             try:
@@ -149,7 +174,8 @@ def arbitrate_issues(task, content, issues, committee=None, timeout=90, max_issu
                 votes.append({"judge": j.name, "error": str(e)[:120]})
         items.append({"judge_id": it.get("judge_id"), "type": it.get("type"),
                       "desc": desc[:200], "sug": (it.get("sug") or "")[:150],
-                      "outcome": _decide(votes), "votes": votes})
+                      "outcome": _decide(votes), "votes": votes,
+                      "evidence": ({"backend": ev_used.get("backend"), "n": len(ev_used.get("snippets") or [])} if ev_used else None)})
     return {"items": items, "calls": calls}
 
 
