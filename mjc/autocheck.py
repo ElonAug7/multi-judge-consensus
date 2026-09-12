@@ -77,13 +77,20 @@ def _arbitrate(task, content, issues, timeout=90, max_issues=3):
 
 
 def _falsify(task, content, timeout=90):
-    """证伪者（红队找错，独立性工程 ①）；失败返回 None（不阻塞主流程）。"""
-    try:
-        from mjc import falsifier
-        r = falsifier.challenge(task, content, timeout=timeout)
-        return r if isinstance(r, dict) else None
-    except Exception:
-        return None
+    """证伪者（红队找错，独立性工程 ①）；瞬时失败重试 1 次；仍失败返回 {"error": ...}（不阻塞主流程）。"""
+    from mjc import falsifier
+    last = None
+    for attempt in (1, 2):
+        try:
+            r = falsifier.challenge(task, content, timeout=timeout)
+            if isinstance(r, dict) and not r.get("error"):
+                return r
+            last = r if isinstance(r, dict) else {"error": "bad_result"}
+        except Exception as e:
+            last = {"error": str(e)[:160]}
+        if attempt == 1:
+            time.sleep(1.5)
+    return last
 
 
 def _tail_lines(path, n=DEDUPE_TAIL):
@@ -206,12 +213,14 @@ def auto_review(content, channel="?", task=None, no_memory=False, kind="message"
         return 1, {"error": f"审查失败: {e}"}
     final_verdict = record["final"]
     # 证伪者（独立性工程 ①）：对抗性找错 → 与委员会事实意见合并 → 独立仲裁复核
-    fals_meta, fals_calls = None, 0
+    fals_meta, fals_calls, fals_err = None, 0, None
     if falsifier:
         _f = _falsify(task_text, content)
         if _f and not _f.get("error") and not _f.get("skipped"):
             fals_meta = _f
             fals_calls = int(_f.get("calls") or 0)
+        elif _f and _f.get("error"):
+            fals_err = str(_f.get("error"))[:160]
     arb_inputs = _collect_arb_issues(record)
     if fals_meta:
         for ch in fals_meta.get("challenges") or []:
@@ -273,6 +282,7 @@ def auto_review(content, channel="?", task=None, no_memory=False, kind="message"
                         "challenges": fals_meta.get("challenges") or [],
                         "confirmed": len(fals_confirmed), "escalated": escalated,
                         "note": fals_meta.get("note")} if fals_meta else None),
+        "falsifier_error": fals_err,
     }
     if fals_confirmed:  # 证伪者 confirmed 的挑战并入 issues（供修复环节消费）
         entry["issues"] = (entry["issues"] + [
@@ -295,6 +305,8 @@ def auto_review(content, channel="?", task=None, no_memory=False, kind="message"
         out["falsifier"] = {"model": fals_meta.get("spec"),
                             "n": len(fals_meta.get("challenges") or []),
                             "confirmed": len(fals_confirmed), "escalated": escalated}
+    if fals_err:
+        out["falsifier_error"] = fals_err
     if final_verdict in ("reject", "need_human"):
         with open(os.path.join(AUTO_LOG_DIR, "findings.jsonl"), "a", encoding="utf-8") as f:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")

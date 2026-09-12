@@ -44,7 +44,7 @@ content
   └─ ⑦ verdict       result + token usage + cost estimate, fully logged
 ```
 
-### Zero-hallucination design (v0.7.1)
+### Zero-hallucination design (v0.7.2)
 
 Detect → arbitrate → repair → re-check — engineered so the system never "fixes" a fact into a different error:
 
@@ -57,8 +57,11 @@ Detect → arbitrate → repair → re-check — engineered so the system never 
 - **External knowledge (opt-in)** (`mjc/knowledge.py`) — arbitration can pull web evidence snippets
   (Bing/Sogou/Baidu HTML backends, or a custom command backend; off by default, cached & rate-limited) so
   refutation/confirmation is grounded in retrievable sources rather than model memory alone.
-- **Dual-producer repair** (`mjc/repair.py`) — two vendors revise independently under the same rules; only a
-  near-identical agreed revision is applied, disagreement keeps the original (no single-model error injection).
+- **Dual-producer repair** (`mjc/repair.py`) — two vendors revise independently under the same rules.
+  v0.7.2 value-level consensus: cross-model wording differs naturally, so "near-identical text" was too strict
+  (blocked every real fix in A/B pilot C5). Agreements are now judged on **numeric value sets** — equal sets
+  (both dropped the old value) or a true-subset revision (fewer claims) may be applied; text-only rewrites and
+  gutted "no-info" revisions are never auto-applied. Disagreement keeps the original (no single-model error injection).
 - **Revision rules** (`mjc/revision.py`) — the repairer must never introduce new specific facts; when in doubt,
   hedge or soften instead of substituting a guess (reviewer suggestions are leads, not truth).
 - **Gate default = full committee** — deliverable gates skip the cheap screen by default (`--screen` to opt back in).
