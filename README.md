@@ -44,7 +44,7 @@ content
   └─ ⑦ verdict       result + token usage + cost estimate, fully logged
 ```
 
-### Zero-hallucination design (v0.9.0)
+### Zero-hallucination design (v0.9.1)
 
 Detect → arbitrate → repair → re-check — engineered so the system never "fixes" a fact into a different error:
 
@@ -73,6 +73,10 @@ Detect → arbitrate → repair → re-check — engineered so the system never 
   requires ≥ `min_snippets` snippets that contain the new value and **not** the old one. A resample
   `conflict` can never be overridden by evidence; retrieval errors block conservatively. Both gates
   off keeps the previous default behavior exactly.
+- **Backend-merge retrieval (v0.9.1)** — evidence search now accumulates and dedupes snippets across the
+  configured backends (`merge_backends` in `repair.evidence_gate`, **on by default**): stops at ≥3 unique
+  snippets or 3 backends tried, retries a backend once on an empty result, and continues past failures —
+  removing the single-backend flakiness reproduced in the csqa-07 demo (`merge_backends: false` = old path).
 - **Revision rules** (`mjc/revision.py`) — the repairer must never introduce new specific facts; when in doubt,
   hedge or soften instead of substituting a guess (reviewer suggestions are leads, not truth).
 - **Gate default = full committee** — deliverable gates skip the cheap screen by default (`--screen` to opt back in).

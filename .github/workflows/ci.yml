@@ -27,7 +27,7 @@ jobs:
                    test_dispositions test_phase3 test_verifier test_live \
                    test_screen_toggle test_mcp test_factcheck test_knowledge \
                    test_repair test_switch test_falsifier test_resample \
-                   test_evidence_gate; do
+                   test_evidence_gate test_evidence_merge; do
             echo "== $t =="
             python3 tests/$t.py
           done

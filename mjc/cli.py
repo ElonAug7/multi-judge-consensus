@@ -411,7 +411,7 @@ def _vals_arg(s):
 
 
 def cmd_evidence_gate(args):
-    """知识证据门调试（v0.9.0）：执行一次证据检索判定（真实检索 1 次；不读取门开关）。
+    """知识证据门调试（v0.9.1）：执行一次证据检索判定（真实检索 1 次；不读取门开关）。
     退出码：supported=0 / 其余（insufficient|error）=2"""
     from mjc import repair as _rep
     r = _rep.evidence_check(args.task, _vals_arg(args.old), _vals_arg(args.new),
@@ -516,7 +516,7 @@ def main():
     p_ev.add_argument("--query", required=True)
     p_ev.set_defaults(fn=cmd_evidence)
 
-    p_eg = sub.add_parser("evidence-gate", help="知识证据门调试 v0.9.0：任务+新增值 → 真实检索证据支持度")
+    p_eg = sub.add_parser("evidence-gate", help="知识证据门调试 v0.9.1：任务+新增值 → 真实检索证据支持度")
     p_eg.add_argument("--task", required=True)
     p_eg.add_argument("--old", default="", help="旧值集合（逗号/空格分隔，可空）")
     p_eg.add_argument("--new", required=True, help="新值集合（逗号/空格分隔）")

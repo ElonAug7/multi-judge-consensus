@@ -23,6 +23,9 @@ MJC · repair.py — 双生产者修订共识（零幻觉架构 · 修复环节�
         片段中"含新值且不含旧值"数 ≥ min_snippets → 放行，否则阻断（resample-evidence-insufficient）；
       · conflict 不可被证据覆盖（直接阻断）；检索异常保守阻断（resample-evidence-error）；
         两门都关时行为与此前完全一致（默认放行）。
+  - v0.9.1 证据检索加固：知识证据门默认改用多后端合并检索（settings.repair.evidence_gate
+      .merge_backends，默认开）——累积去重 + 空结果重试 + 失败降级，消除抓取后端波动
+      导致的证据误判（csqa-07 复现：首调某后端瞬时空结果即降级误判）。
   - 未达共识 → 安全方向：不采纳任何一版（保留原文），返回 disagreed（附两版供处置）；
   - 有效修订 < 2 路 → incomplete（保守不采纳）。
 
@@ -131,8 +134,9 @@ def _snippet_supports(text, old_vals, new_vals):
     return not any(str(v) in s for v in (old_vals or []))
 
 
-def evidence_check(task, old_vals, new_vals, min_snippets=2):
+def evidence_check(task, old_vals, new_vals, min_snippets=2, merge=True):
     """执行一次证据检索并统计支持度（不读开关；知识证据门、CLI 调试与演示共用）。
+    merge=True（默认，v0.9.1）走多后端合并检索；merge=False 保持旧「首个非空后端」路径。
     返回 {"verdict": supported|insufficient|error, "support", "n_snippets", "min_snippets",
           "query", "backend", "supporting": [{title,url,excerpt}...]}；不抛出。
     基础设施异常 → verdict=error（调用方需保守处理，不得放行）。"""
@@ -143,7 +147,7 @@ def evidence_check(task, old_vals, new_vals, min_snippets=2):
     query = _evidence_query(task, new_vals)
     try:
         from mjc import knowledge
-        res = knowledge.fetch_evidence(query)
+        res = knowledge.fetch_evidence(query, merge=merge)
     except Exception as e:  # noqa：基础设施异常，保守（error ≠ 支持）
         return {"verdict": "error", "support": 0, "n_snippets": 0, "min_snippets": ns,
                 "query": query, "note": str(e)[:160]}
@@ -163,9 +167,9 @@ def evidence_check(task, old_vals, new_vals, min_snippets=2):
 
 
 def _evidence_gate(task, old_vals, new_vals):
-    """知识证据门（settings.repair.evidence_gate，默认关 · v0.9.0）。
-    未启用/配置不可读 → None（不引入约束）；启用 → evidence_check 结果
-    （检索异常 → verdict=error，上层保守阻断，不误放行）。"""
+    """知识证据门（settings.repair.evidence_gate，默认关 · v0.9.0 引入 / v0.9.1 合并检索）。
+    未启用/配置不可读 → None（不引入约束）；启用 → evidence_check 结果（默认 merge=True，
+    可被 merge_backends=false 关回旧单后端路径；检索异常 → verdict=error，上层保守阻断）。"""
     try:
         from mjc import settings as _settings
         cfg = ((_settings.load().get("repair") or {}).get("evidence_gate") or {})
@@ -173,7 +177,8 @@ def _evidence_gate(task, old_vals, new_vals):
             return None
     except Exception:
         return None
-    return evidence_check(task, old_vals, new_vals, min_snippets=cfg.get("min_snippets", 2))
+    return evidence_check(task, old_vals, new_vals, min_snippets=cfg.get("min_snippets", 2),
+                          merge=bool(cfg.get("merge_backends", True)))
 
 
 def _block_note(reason):

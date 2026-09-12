@@ -53,7 +53,7 @@ def _mock_fetch(result=None, exc=None):
     old = knowledge.fetch_evidence
     calls = []
 
-    def fake(q, backends=None):
+    def fake(q, backends=None, **kw):
         calls.append(q)
         if exc:
             raise exc
