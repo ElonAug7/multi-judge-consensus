@@ -135,12 +135,13 @@ def _recent_duplicate(sha, kind, hours=DEDUPE_H):
 
 def auto_review(content, channel="?", task=None, no_memory=False, kind="message", verbose=False,
               emit=None, task_id=None, min_len=None, no_screen=False, screen_override=None,
-              arbitrate=True, falsifier=True):
+              arbitrate=True, falsifier=True, dedupe=True):
     """自动审查核心（供 cmd_auto 与 cmd_scan 复用）。返回 (exit_code, summary_dict)。
     kind: message（回复文本）| code（代码任务收尾审查，交付前用）
     min_len=None → 读 settings.limits.auto（默认 1，≈全量送审）；no_screen 强制跳过初筛。
     arbitrate=True：非 pass 时对“事实类意见”做独立仲裁（factcheck）并写入日志/输出。
-    falsifier=True：证伪者红队找错（独立性工程），confirmed 挑战可将 pass 升级为 revise。"""
+    falsifier=True：证伪者红队找错（独立性工程），confirmed 挑战可将 pass 升级为 revise。
+    dedupe=True：同 sha+kind 数小时内已审过则跳过（hook 去重用）；实验 harness 传 False 强制新鲜审查。"""
     content = (content or "").strip()
     channel = channel or "?"
     kind = kind or "message"
@@ -153,10 +154,11 @@ def auto_review(content, channel="?", task=None, no_memory=False, kind="message"
     if not re.search(r"\w", content):
         return 0, {"skipped": "no_text", "len": len(content)}
     sha = hashlib.sha1(content.encode()).hexdigest()[:10]
-    dup_ts = _recent_duplicate(sha, kind)
-    if dup_ts:
-        # 同内容 N 小时内已审过（且结论相同——内容未变）→ 跳过，省一次 API 审查
-        return 0, {"skipped": "dup", "sha": sha, "kind": kind, "since": dup_ts}
+    if dedupe:
+        dup_ts = _recent_duplicate(sha, kind)
+        if dup_ts:
+            # 同内容 N 小时内已审过（且结论相同——内容未变）→ 跳过，省一次 API 审查
+            return 0, {"skipped": "dup", "sha": sha, "kind": kind, "since": dup_ts}
     os.makedirs(AUTO_LOG_DIR, exist_ok=True)
     pool_err = None
     try:
