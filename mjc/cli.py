@@ -405,6 +405,21 @@ def cmd_evidence(args):
     return 0 if r else 2
 
 
+def _vals_arg(s):
+    """'1997,2009' / '1997 2009' → {'1997','2009'}（值集合参数解析）"""
+    return set(str(s or "").replace("，", ",").replace(",", " ").split())
+
+
+def cmd_evidence_gate(args):
+    """知识证据门调试（v0.9.0）：执行一次证据检索判定（真实检索 1 次；不读取门开关）。
+    退出码：supported=0 / 其余（insufficient|error）=2"""
+    from mjc import repair as _rep
+    r = _rep.evidence_check(args.task, _vals_arg(args.old), _vals_arg(args.new),
+                            min_snippets=args.min_snippets)
+    print(json.dumps(r, ensure_ascii=False, indent=1))
+    return 0 if r.get("verdict") == "supported" else 2
+
+
 def cmd_repair(args):
     """双生产者修订共识：不同厂商各自修订 → 一致才采纳（防单模型引入新错误）。"""
     from mjc import repair as _rep
@@ -500,6 +515,13 @@ def main():
     p_ev = sub.add_parser("evidence", help="外部知识源检索（事实核查调试）")
     p_ev.add_argument("--query", required=True)
     p_ev.set_defaults(fn=cmd_evidence)
+
+    p_eg = sub.add_parser("evidence-gate", help="知识证据门调试 v0.9.0：任务+新增值 → 真实检索证据支持度")
+    p_eg.add_argument("--task", required=True)
+    p_eg.add_argument("--old", default="", help="旧值集合（逗号/空格分隔，可空）")
+    p_eg.add_argument("--new", required=True, help="新值集合（逗号/空格分隔）")
+    p_eg.add_argument("--min-snippets", type=int, default=2, help="放行所需支持片段数（默认 2）")
+    p_eg.set_defaults(fn=cmd_evidence_gate)
 
     p_rep = sub.add_parser("repair", help="双生产者修订共识（不同厂商各自修订，一致才采纳）")
     p_rep.add_argument("--task", required=True)

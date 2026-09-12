@@ -17,13 +17,19 @@ MJC · repair.py — 双生产者修订共识（零幻觉架构 · 修复环节�
         纯新增（加值不换值）一律阻断（drop-blocked / add-blocked）；
       · 盲重采样门（settings.repair.resample_gate，默认关）：值替换需在"看不见原答"
         的重复采样中获得多数支持（supported），否则阻断（resample-xxx）。
+  - v0.9.0 知识证据门（settings.repair.evidence_gate，默认关 · opt-in）：
+      · 值替换在盲重采样"未支持"（inconclusive/skipped）或重采样门未启用时，可由外部
+        检索证据放行：查询 = 任务（截断 ≤80 字）+ 新增值 → knowledge.fetch_evidence；
+        片段中"含新值且不含旧值"数 ≥ min_snippets → 放行，否则阻断（resample-evidence-insufficient）；
+      · conflict 不可被证据覆盖（直接阻断）；检索异常保守阻断（resample-evidence-error）；
+        两门都关时行为与此前完全一致（默认放行）。
   - 未达共识 → 安全方向：不采纳任何一版（保留原文），返回 disagreed（附两版供处置）；
   - 有效修订 < 2 路 → incomplete（保守不采纳）。
 
 用法：dual_revise(task, prev, feedback, specs=None)
       → {"mode": "agreed|disagreed|incomplete|error", "applied": str, "revs": [...],
-         "agreement": "exact|value-set|value-subset|drop-blocked|add-blocked|resample-*",
-         "values": {...}, "resample": {...}?, "tokens": N}
+         "agreement": "exact|value-set|value-subset|drop-blocked|add-blocked|resample-*|resample-evidence-*",
+         "values": {...}, "resample": {...}?, "evidence": {...}?, "tokens": N}
 """
 import re
 
@@ -90,7 +96,8 @@ def _value_op_block(o, v):
 
 def _resample_gate(task, old_vals, new_vals):
     """盲重采样门（settings.repair.resample_gate，默认关）。
-    未启用/基础设施不具备 → None（不阻塞）；否则返回 resample.evaluate 结果。"""
+    未启用/基础设施不具备（skipped）→ None（不阻塞，链上继续交给知识证据门）；
+    否则返回 resample.evaluate 结果（supported/conflict/inconclusive）。"""
     try:
         from mjc import settings as _settings
         cfg = ((_settings.load().get("repair") or {}).get("resample_gate") or {})
@@ -106,32 +113,123 @@ def _resample_gate(task, old_vals, new_vals):
         return None
 
 
+def _evidence_query(task, new_vals):
+    """证据检索查询：任务截断 ≤80 字 + 新增值（空格分隔；总长 ≤120）。"""
+    t = re.sub(r"\s+", " ", (task or "")).strip()[:80]
+    vals = " ".join(sorted(str(v) for v in (new_vals or [])))
+    q = (t + (" " + vals if vals else "")).strip()
+    return q[:120]
+
+
+def _snippet_supports(text, old_vals, new_vals):
+    """片段是否支持"新值"：含任一新增值且不含旧值（与 resample._has_new_and_no_old 同语义）。"""
+    s = str(text or "")
+    if not s:
+        return False
+    if not any(str(v) in s for v in (new_vals or [])):
+        return False
+    return not any(str(v) in s for v in (old_vals or []))
+
+
+def evidence_check(task, old_vals, new_vals, min_snippets=2):
+    """执行一次证据检索并统计支持度（不读开关；知识证据门、CLI 调试与演示共用）。
+    返回 {"verdict": supported|insufficient|error, "support", "n_snippets", "min_snippets",
+          "query", "backend", "supporting": [{title,url,excerpt}...]}；不抛出。
+    基础设施异常 → verdict=error（调用方需保守处理，不得放行）。"""
+    try:
+        ns = max(1, int(min_snippets))
+    except Exception:
+        ns = 2
+    query = _evidence_query(task, new_vals)
+    try:
+        from mjc import knowledge
+        res = knowledge.fetch_evidence(query)
+    except Exception as e:  # noqa：基础设施异常，保守（error ≠ 支持）
+        return {"verdict": "error", "support": 0, "n_snippets": 0, "min_snippets": ns,
+                "query": query, "note": str(e)[:160]}
+    snippets = list((res or {}).get("snippets") or [])
+    support, samples = 0, []
+    for sn in snippets:
+        text = " ".join(str(sn.get(k) or "") for k in ("title", "text"))
+        if _snippet_supports(text, old_vals, new_vals):
+            support += 1
+            if len(samples) < 3:  # 取证样例：最多 3 条
+                samples.append({"title": str(sn.get("title") or "")[:60],
+                                "url": str(sn.get("url") or "")[:120],
+                                "excerpt": str(sn.get("text") or "")[:80]})
+    return {"verdict": "supported" if support >= ns else "insufficient",
+            "support": support, "n_snippets": len(snippets), "min_snippets": ns,
+            "query": query, "backend": (res or {}).get("backend"), "supporting": samples}
+
+
+def _evidence_gate(task, old_vals, new_vals):
+    """知识证据门（settings.repair.evidence_gate，默认关 · v0.9.0）。
+    未启用/配置不可读 → None（不引入约束）；启用 → evidence_check 结果
+    （检索异常 → verdict=error，上层保守阻断，不误放行）。"""
+    try:
+        from mjc import settings as _settings
+        cfg = ((_settings.load().get("repair") or {}).get("evidence_gate") or {})
+        if not cfg.get("enabled"):
+            return None
+    except Exception:
+        return None
+    return evidence_check(task, old_vals, new_vals, min_snippets=cfg.get("min_snippets", 2))
+
+
 def _block_note(reason):
     if reason == "drop-blocked":
         return "值删除被阻断（v0.8.0：仅允许具体值→具体值替换）"
     if reason == "add-blocked":
         return "值新增被阻断（v0.8.0：缺旧值替换依据）"
+    if reason and reason.startswith("resample-evidence-"):
+        if reason.endswith("error"):
+            return "知识证据门异常（保守阻断）→ 保留原文"
+        return "外部检索证据不足（未达 min_snippets 条支持）→ 保留原文"
     if reason and reason.startswith("resample-"):
         return f"盲重采样未支持（{reason}）→ 保留原文"
     return "安全门阻断 → 保留原文"
 
 
+def _resample_sum(rg):
+    """重采样结果摘要（供 result["resample"] 取证）。"""
+    return {"verdict": rg.get("verdict"), "support": rg.get("support"),
+            "n": rg.get("n"), "model": rg.get("model")}
+
+
 def _safety_checks(task, prev, cand_text):
-    """v0.8.0 安全门 → (ok, reason, extra)。
-    1) 值操作原则；2) 值替换时过盲重采样门。"""
+    """v0.8.0 安全门 + v0.9.0 知识证据门链 → (ok, reason, extra)。
+    1) 值操作原则；
+    2) 值替换（值集合变化且 v-o 非空）→ 依次过两个 opt-in 门：
+       · 盲重采样门：supported → 放行；conflict → 直接阻断（证据不可覆盖）；
+         inconclusive/skipped → 继续进入证据门；
+       · 知识证据门（enabled 时）：≥ min_snippets 条"含新值且不含旧值"片段 → 放行；
+         不足/异常 → 阻断（resample-evidence-*）；
+       · 两门都关 → 维持原行为放行。"""
     o, v = _values(prev), _values(cand_text)
     block = _value_op_block(o, v)
     if block:
         return False, block, {}
-    if v != o and (v - o):  # 值替换 → 重采样门
-        gate = _resample_gate(task, o, v - o)
-        if gate is not None and gate.get("verdict") != "supported":
-            return False, f"resample-{gate.get('verdict')}", {
-                "resample": {"verdict": gate.get("verdict"), "support": gate.get("support"),
-                             "n": gate.get("n"), "model": gate.get("model")}}
-        if gate is not None:
-            return True, "", {"resample": {"verdict": "supported", "support": gate.get("support"),
-                                             "n": gate.get("n"), "model": gate.get("model")}}
+    if v != o and (v - o):  # 值替换 → 重采样门 → 知识证据门（opt-in 链）
+        rg = _resample_gate(task, o, v - o)
+        if rg is not None and rg.get("verdict") == "supported":
+            return True, "", {"resample": _resample_sum(rg)}
+        if rg is not None and rg.get("verdict") == "conflict":
+            return False, "resample-conflict", {"resample": _resample_sum(rg)}
+        # 重采样门未启用 / inconclusive / skipped → 继续知识证据门
+        extra = {}
+        if rg is not None:
+            extra["resample"] = _resample_sum(rg)
+        ev = _evidence_gate(task, o, v - o)
+        if ev is not None:
+            extra["evidence"] = ev
+            if ev.get("verdict") == "supported":
+                return True, "", extra
+            return False, f"resample-evidence-{ev.get('verdict')}", extra
+        # 证据门未启用/不可读：维持 v0.8.0 对重采样结果的处置
+        # （inconclusive → 阻断；skipped 已映射为 None，不阻塞）
+        if rg is not None and rg.get("verdict") != "supported":
+            return False, f"resample-{rg.get('verdict')}", extra
+        return True, "", extra
     return True, "", {}
 
 

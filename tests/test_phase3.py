@@ -224,14 +224,21 @@ def test_judge_same_vendor_fallback(tmp):
 def offline_all():
     print("== Phase 3 离线逻辑测试（零 API）==")
     tmp = tempfile.mkdtemp(prefix="mjc-t3-")
-    pool = _judge_pool()
-    test_cache_roundtrip(tmp)
-    test_trust_streak_and_degrade(tmp)
-    test_trust_error_ticket_neutral(tmp)
-    test_pipeline_screen_and_cache(tmp, pool)
-    test_pipeline_degrade(tmp, pool)
-    test_judge_same_vendor_fallback(tmp)
-    print("== 全部离线测试通过 ✅ ==")
+    # 运行数据隔离：usage.json 等写临时目录（不碰真 logs/；真 API 路径不受影响）
+    from mjc import paths as _paths
+    _old_log_dir = _paths.LOG_DIR
+    _paths.LOG_DIR = tmp
+    try:
+        pool = _judge_pool()
+        test_cache_roundtrip(tmp)
+        test_trust_streak_and_degrade(tmp)
+        test_trust_error_ticket_neutral(tmp)
+        test_pipeline_screen_and_cache(tmp, pool)
+        test_pipeline_degrade(tmp, pool)
+        test_judge_same_vendor_fallback(tmp)
+        print("== 全部离线测试通过 ✅ ==")
+    finally:
+        _paths.LOG_DIR = _old_log_dir
 
 
 # ---------- 真 API 验收 ----------

@@ -50,8 +50,13 @@ def run():
 
     # pipeline 集成：verifier 命中时 judge 不被调用（离线假 pool）
     import json
+    import tempfile
     from unittest import mock
-    from mjc import pipeline
+    from mjc import pipeline, paths as _paths
+
+    # 运行数据隔离：usage.json 等写临时目录（不碰真 logs/）
+    _old_log_dir = _paths.LOG_DIR
+    _paths.LOG_DIR = tempfile.mkdtemp(prefix="mjc-verifier-")
 
     class BoomJudge:
         name = "boom:judge"
@@ -77,6 +82,7 @@ def run():
     # env 关验证器后应走委员会（QuietJudge 被调用且最终 pass）
     check("env MJC_VERIFIER=0 可关闭（走委员会）", not meta2.get("verifier") and rec2["final"] == "pass")
 
+    _paths.LOG_DIR = _old_log_dir
     print("== verifier 全部通过 ✅ ==" if ok else "== ❌ 有失败 ==")
     return 0 if ok else 1
 

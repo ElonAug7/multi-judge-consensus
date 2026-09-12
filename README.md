@@ -44,7 +44,7 @@ content
   └─ ⑦ verdict       result + token usage + cost estimate, fully logged
 ```
 
-### Zero-hallucination design (v0.8.0)
+### Zero-hallucination design (v0.9.0)
 
 Detect → arbitrate → repair → re-check — engineered so the system never "fixes" a fact into a different error:
 
@@ -67,6 +67,12 @@ Detect → arbitrate → repair → re-check — engineered so the system never 
   are allowed: pure drops (losing values) and pure additions are blocked outright; replacements can
   additionally require **blind resample support** (settings `repair.resample_gate`, off by default —
   see `mjc/resample.py`, self-consistency line) before adoption.
+- **Knowledge evidence gate (v0.9.0)** — when blind resampling is inconclusive (or the resample gate is
+  off), a value replacement can still be cleared by **external retrieval evidence**: an opt-in gate
+  (settings `repair.evidence_gate`, off by default) searches (task + proposed value, ≤80 chars) and
+  requires ≥ `min_snippets` snippets that contain the new value and **not** the old one. A resample
+  `conflict` can never be overridden by evidence; retrieval errors block conservatively. Both gates
+  off keeps the previous default behavior exactly.
 - **Revision rules** (`mjc/revision.py`) — the repairer must never introduce new specific facts; when in doubt,
   hedge or soften instead of substituting a guess (reviewer suggestions are leads, not truth).
 - **Gate default = full committee** — deliverable gates skip the cheap screen by default (`--screen` to opt back in).
@@ -167,7 +173,7 @@ mjc/
 ├── webui.py         admin console (review / live tasks / settings)
 ├── mcp_server.py    MCP stdio server
 └── settings.py      runtime config (provider registry, model catalog, tier presets)
-tests/               17 offline suites (0 API calls; key-dependent cases skip gracefully)
+tests/               18 offline suites (0 API calls; key-dependent cases skip gracefully)
 samples/bench-v1.json   adversarial benchmark corpus
 ```
 
@@ -177,7 +183,7 @@ samples/bench-v1.json   adversarial benchmark corpus
 python3 tests/test_phase3.py     # pipeline/cache/degradation
 python3 tests/test_verifier.py   # deterministic verifier
 python3 tests/test_mcp.py        # MCP protocol
-# …17 suites total, all offline. GitHub Actions runs them on Python 3.9/3.11/3.12.
+# …18 suites total, all offline. GitHub Actions runs them on Python 3.9/3.11/3.12.
 ```
 
 ## Security & notes

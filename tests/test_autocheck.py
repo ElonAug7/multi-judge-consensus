@@ -20,6 +20,7 @@ import mjc.pipeline
 from mjc import settings as settings_mod
 import mjc.scan
 import mjc.autocheck as ac
+import mjc.live
 from mjc.autocheck import auto_review, cmd_auto, cmd_scan
 
 CODE_DEFAULT_TASK = "（代码任务收尾审查）回顾以下改动描述与代码片段是否准确"
@@ -45,6 +46,7 @@ def _setup(tmp, screen_on=False):
 
     ac.AUTO_LOG_DIR = tmp
     ac.LOG_DIR = tmp
+    mjc.live.PATH = os.path.join(tmp, "live.jsonl")  # 实时事件流隔离：默认 emit 不再写真 logs/
     ac.build_pool = lambda specs: [object(), object()]  # 只要 len≥2
     ac._limit = lambda name, fallback=1: 1  # 全量介入语义（默认 1），不受真实 settings 影响
     ac._falsify = lambda *a, **k: None  # 隔离证伪者（默认场景）
