@@ -183,6 +183,49 @@ def run():
             knowledge._BLOCKED_AT.clear()
             knowledge.BACKEND_STATUS.clear()
 
+        # ---- 7) 浏览器后端（v0.11.0j）：真浏览器渲染绕开反爬 ----
+        import subprocess as _sp
+
+        BAIDU_DOM = (
+            '<html><body>'
+            '<div class="result c-container">'
+            '<h3>香港平安钟协会有限公司 - 百度百科</h3>'
+            '<span>2009年1月6日 香港平安钟协会有限公司正式成立 开通长者热线，免费为长者提供生活帮助服务。</span>'
+            '</div>'
+            '<div class="result c-container">'
+            '<h3>香港平安钟协会有限公司_对外投资 - 天眼查</h3>'
+            '<span>成立于2009年，位于香港特别行政区。成立日期 2009-01-06</span>'
+            '</div>'
+            '</body></html>')
+
+        class _P:
+            def __init__(self, out, err=""):
+                self.stdout, self.stderr, self.returncode = out, err, 0
+
+        old_run = _sp.run
+        knowledge.BACKEND_STATUS.clear()
+        try:
+            _sp.run = lambda *a, **k: _P(BAIDU_DOM)
+            sn = knowledge._back_browser("香港平安钟协会最早成立于哪一年", 30)
+            sup = [x for x in sn if "2009" in x["text"] and "1997" not in x["text"]]
+            check("浏览器后端解析出结果块", len(sn) >= 2)
+            check("浏览器后端产出 2 条支持片段（满足 min_snippets=2）", len(sup) >= 2)
+            check("状态 ok", knowledge.BACKEND_STATUS["browser"]["status"] == "ok")
+
+            _sp.run = lambda *a, **k: _P(BAIDU_BLOCK)
+            knowledge.BACKEND_STATUS.clear()
+            sn2 = knowledge._back_browser("q", 30)
+            check("浏览器拿到反爬页 → blocked 且 0 条",
+                  sn2 == [] and knowledge.BACKEND_STATUS["browser"]["status"] == "blocked")
+
+            _sp.run = lambda *a, **k: _P("")
+            knowledge.BACKEND_STATUS.clear()
+            sn3 = knowledge._back_browser("q", 30)
+            check("浏览器无输出 → error", sn3 == [] and knowledge.BACKEND_STATUS["browser"]["status"] == "error")
+        finally:
+            _sp.run = old_run
+            knowledge.BACKEND_STATUS.clear()
+
         # ---- 5) cmd 插件口（接正规搜索 API 的唯一通道）状态可见 ----
         knowledge.BACKEND_STATUS.clear()
         old_env = os.environ.pop("MJC_KNOWLEDGE_CMD", None)

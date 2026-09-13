@@ -273,6 +273,70 @@ def _back_baidu(query, timeout):
     return out
 
 
+BROWSER_UA = ("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+              "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
+BROWSER_BIN = os.environ.get("MJC_BROWSER_BIN") or os.path.expanduser(
+    "~/.local/chrome/opt/google/chrome/chrome")
+BROWSER_ENGINES = {"baidu": "https://www.baidu.com/s?wd={q}",
+                   "bing": "https://cn.bing.com/search?q={q}",
+                   "so360": "https://www.so.com/s?q={q}"}
+
+
+def _back_browser(query, timeout):
+    """无头浏览器检索后端（v0.11.0j）——用**真浏览器**渲染搜索页，绕开抓取型反爬。
+
+    实测（2026-09-13）：urllib 直抓 baidu/sogou/so360 全部撞反爬（403 / 验证码页 / 伪装降级页），
+    而 headless Chrome（完整浏览器指纹 + 执行 JS）抓 baidu 返回 803KB 真实结果页，csqa-07 的关键
+    证据可直接解析出来：
+      · 百度百科「2009年1月6日 香港平安钟协会有限公司正式成立」
+      · 天眼查「成立于2009年…成立日期 2009-01-06」
+    恰构成 2 条支持片段（满足 min_snippets=2）。**无需 API key、无冷却等待。**
+
+    与抓取后端的区别：走浏览器，天然执行 JS、带完整请求头，故不被 UA/指纹类反爬拦住。
+    引擎可配（knowledge.browser_engine，默认 baidu）；二进制可用 MJC_BROWSER_BIN 覆盖。
+    """
+    cfg = _settings_cfg()
+    eng = str(cfg.get("browser_engine") or "baidu").lower()
+    tpl = BROWSER_ENGINES.get(eng) or BROWSER_ENGINES["baidu"]
+    url = tpl.format(q=urllib.parse.quote(query or ""))
+    binp = str(cfg.get("browser_bin") or BROWSER_BIN)
+    if not os.path.exists(binp):
+        _note_status("browser", "error", f"浏览器不存在: {binp}")
+        return []
+    try:
+        p = subprocess.run(
+            [binp, "--headless=new", "--no-sandbox", "--disable-gpu",
+             f"--user-agent={BROWSER_UA}", "--dump-dom", url],
+            capture_output=True, text=True,
+            timeout=max(45.0, float(timeout or 12) + 40))
+    except Exception as e:  # noqa
+        _note_exception("browser", e)
+        return []
+    h = p.stdout or ""
+    if not h:
+        _note_status("browser", "error", (p.stderr or "无输出")[:120])
+        return []
+    reason = _detect_block(h)
+    if reason:
+        _note_status("browser", "blocked", f"反爬页指纹: {reason}")
+        return []
+    # 按结果容器起点切段（不在摘要前早截断——旧正则在标题处即断，会丢掉关键证据句）
+    parts = re.split(r'(?=<div[^>]*class="[^"]*(?:c-container|result-op)[^"]*")', h)
+    if len(parts) <= 1:
+        parts = [""] + re.findall(r'<li class="b_algo".*?</li>', h, re.S)
+    out = []
+    for seg in parts[1:]:
+        seg = NOISE_RE.sub(" ", seg)
+        t = re.sub(r"\s+", " ", html.unescape(TAG_RE.sub(" ", seg))).strip()
+        if len(t) > 40:
+            out.append({"title": t[:90], "url": "", "text": t[:600]})
+        if len(out) >= 6:
+            break
+    _note_status("browser", "ok" if out else "unparsed",
+                 "" if out else f"HTML {len(h)} 字符但未解析出结果块（引擎={eng}）")
+    return out
+
+
 def _back_so360(query, timeout):
     """360 搜索（v0.11.0c 新增）：2026-09-13 实测**唯一免 key 且可用的通用搜索后端**
     （sogou 403、baidu 反爬、bing 召回差、境外端点不可达）。csqa-07 实测其第 2 条结果块即
@@ -327,7 +391,7 @@ def _back_cmd(query, timeout):
         return []
 
 
-BACKENDS = {"so360": _back_so360, "sogou": _back_sogou, "bing": _back_bing,
+BACKENDS = {"browser": _back_browser, "so360": _back_so360, "sogou": _back_sogou, "bing": _back_bing,
             "baidu": _back_baidu, "cmd": _back_cmd}
 
 

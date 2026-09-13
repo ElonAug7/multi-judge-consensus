@@ -202,7 +202,8 @@
   ],
   "max_per_review": 3,
   "timeout": 12,
-  "note": "v0.11.0f：**不要用模型中介搜索当证据源**。实测 dashscope enable_search：要求它逐字引用检索片段 → 编造（同一问题三次给出 1973/空/1975 三个假年份+假来源）；自然语言问法 → 同一问题先给 2009×3、后给 1972×2（一致性门会『一致地错』）。结论：模型拿到的是答案而非原文，逼它引用必然造假，一致性无法保证正确 → 不得进证据门。抓取型后端（so360/sogou/bing/baidu）仍会被反爬长期封禁；可靠证据请用 cmd 后端接正规搜索 API：MJC_KNOWLEDGE_CMD='curl -s \"https://<api>/search?q={query}&key=$KEY\"'。"
+  "note": "v0.11.0j：**推荐 browser 后端**——用无头 Chrome 渲染搜索页（真浏览器指纹 + 执行 JS），实测 urllib 抓 baidu/sogou/so360 全部撞反爬（403/验证码/伪装降级页），而浏览器抓 baidu 返回 803KB 真实结果页，csqa-07 的百度百科「2009年1月6日 正式成立」+ 天眼查「成立日期 2009-01-06」可解析为 2 条支持片段，且**总耗时 2.5 秒**（对比抓取型需等反爬冷却数分钟）。引擎可配 knowledge.browser_engine（baidu/bing/so360）；二进制用 MJC_BROWSER_BIN 覆盖。",
+  "browser_engine": "baidu"
  },
  "falsifier": {
   "enabled": true,
