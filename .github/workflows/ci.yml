@@ -23,11 +23,15 @@ jobs:
       - name: 离线测试套件（零 API，无需任何 key）
         run: |
           set -e
+          # 注意：test_debate.py 是**实时 API 基准**（3 模型 × 20 样本，非离线套件），
+          # 不得加入 CI；下方均为零 API 离线套件。
           for t in test_settings test_webui_api test_scan test_autocheck \
                    test_dispositions test_phase3 test_verifier test_live \
                    test_screen_toggle test_mcp test_factcheck test_knowledge \
                    test_repair test_switch test_falsifier test_resample \
-                   test_evidence_gate test_evidence_merge; do
+                   test_evidence_gate test_evidence_merge test_evidence_independence \
+                   test_dissent_guard test_evidence_revise test_ipv4_pref \
+                   test_parallel_search test_hallucination; do
             echo "== $t =="
             python3 tests/$t.py
           done

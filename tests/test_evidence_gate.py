@@ -84,8 +84,10 @@ def test_gate_supports_apply():
         assert r["mode"] == "agreed" and "2009" in r["applied"], r
         ev = r.get("evidence") or {}
         assert ev.get("verdict") == "supported" and ev.get("support") == 2, r
-        assert ev.get("n_snippets") == 3 and "2009" in ev.get("query", ""), ev
-        assert len(calls) == 1 and "2009" in calls[0], calls
+        assert ev.get("n_snippets") == 3, ev
+        # v0.11.0：证据独立性——查询**不得**含新值（旧契约断言 "2009" in query，属自证）
+        assert "2009" not in ev.get("query", "") and "1997" not in ev.get("query", ""), ev
+        assert len(calls) == 1 and "2009" not in calls[0], calls
     finally:
         rf(); rs(); restore()
     print("  ✅ supported：2/3 片段支持新值 → 放行（evidence 取证字段齐全）")
@@ -236,13 +238,14 @@ def test_resample_inconclusive_evidence_off_blocks():
 
 
 def test_evidence_query_build():
-    """查询构建：任务截断 ≤80 字 + 新增值（多值排序）"""
-    q = repair._evidence_query("甲" * 100, {"2009"})
-    assert len(q) == 80 + 1 + 4 and q.startswith("甲" * 80) and q.endswith("2009"), q
-    q2 = repair._evidence_query("短任务", {"9", "10"})
-    assert q2 == "短任务 10 9" or q2 == "短任务 9 10", q2  # sorted
-    assert q2.split()[1:] == sorted(q2.split()[1:]), q2
-    print("  ✅ 查询构建：≤80 字截断 + 新增值排序拼接")
+    """查询构建（v0.11.0）：只含问题句、≤80 字截断；**不得含** old/new 值（证据独立性）"""
+    q = repair._evidence_query("甲" * 100, {"1997"}, {"2009"})
+    assert len(q) <= 80 and q.startswith("甲" * 80), q
+    assert "2009" not in q and "1997" not in q, q
+    q2 = repair._evidence_query("请用一句话以内回答下面的问题：\n香港平安钟协会最早成立于哪一年？",
+                                {"1997"}, {"2009"})
+    assert q2 == "香港平安钟协会最早成立于哪一年？", q2
+    print("  ✅ 查询构建：只含问题句 + ≤80 字截断（新旧值均不进入查询）")
 
 
 def main():
