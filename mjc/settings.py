@@ -378,7 +378,10 @@ def probe(provider, model=None, data=None, force=False):
             del tried[0]
     for m in models:
         try:
-            P.chat(provider, [{"role": "user", "content": "ping"}], model=m, max_tokens=8, timeout=30, retries=2)
+            # v0.11.0e：max_tokens 必须给足——推理模型（如 deepseek-v4-flash）会把极小预算
+            # 全部用于 reasoning_content，content 为空 → 连通性探测把好模型误报为不可用。
+            P.chat(provider, [{"role": "user", "content": "ping"}], model=m, max_tokens=512,
+                   timeout=30, retries=2)
             tried_disp = tried[:]
             if dropped:
                 tried_disp = [f"…另有 {dropped} 次失败未列"] + tried_disp

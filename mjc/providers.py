@@ -130,12 +130,20 @@ def chat(name, messages, model=None, temperature=0.2, max_tokens=1500, timeout=6
         try:
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
-            content = (data["choices"][0]["message"].get("content") or "").strip()
+            msg = data["choices"][0].get("message") or {}
+            content = (msg.get("content") or "").strip()
             if content:
                 u = data.get("usage") or {}
                 record_usage(name, model or MODELS.get(name), u.get("prompt_tokens"), u.get("completion_tokens"))
                 return content
-            last_exc = RuntimeError(f"[{name}] 空响应 (attempt {attempt+1})")
+            # v0.11.0e：推理模型（如 deepseek-v4-flash）会把 max_tokens 全部用于 reasoning_content，
+            # content 为空 —— 旧实现只报"[x] 空响应"，导致把好模型误判为下线（2026-09-13 实测踩坑）。
+            # 现在把真因写进错误信息，并给出可操作提示。
+            reason = (msg.get("reasoning_content") or "").strip()
+            last_exc = RuntimeError(
+                f"[{name}] 空响应 (attempt {attempt+1})"
+                + (f"：预算被 reasoning_content 吃尽（推理模型需要更大的 max_tokens，当前 {max_tokens}）"
+                   if reason else ""))
         except urllib.error.HTTPError as e:
             detail = ""
             try:
