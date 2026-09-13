@@ -65,6 +65,20 @@ def run():
 
         # ③ 报文里带当前预算，便于定位
         check("错误信息带出当前 max_tokens 值", "10" in msg)
+
+        # ④ extra 字段合并进请求体（v0.11.0f：dashscope enable_search 等扩展参数）
+        seen = {}
+        payload = {"choices": [{"message": {"role": "assistant", "content": "OK"}}], "usage": {}}
+
+        def _capture(req, timeout=None):
+            seen["body"] = json.loads(req.data.decode())
+            return _Resp(json.dumps(payload).encode())
+
+        urllib.request.urlopen = _capture
+        providers.chat("fake", [{"role": "user", "content": "x"}], model="m", max_tokens=512,
+                       retries=1, extra={"enable_search": True})
+        check("extra 合并进请求体", seen["body"].get("enable_search") is True)
+        check("extra 不破坏基础字段", seen["body"].get("model") == "m" and "messages" in seen["body"])
     finally:
         urllib.request.urlopen = old_urlopen
         providers._load_keys = old_keys

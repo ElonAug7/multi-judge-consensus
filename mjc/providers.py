@@ -105,22 +105,28 @@ def has_key(name):
     return name in _load_keys()
 
 
-def chat(name, messages, model=None, temperature=0.2, max_tokens=1500, timeout=60, retries=3):
+def chat(name, messages, model=None, temperature=0.2, max_tokens=1500, timeout=60, retries=3,
+         extra=None):
     """调 OpenAI 兼容 chat completions。返回文本。
     重试策略（P1.2）：空响应/429/5xx/网络错误 → 自动重试（最多 retries 次，指数退避 1.5x 上限 8s）；
-    其余 4xx（401/403/404 等）→ 立即抛错不重试（重试无意义）。"""
+    其余 4xx（401/403/404 等）→ 立即抛错不重试（重试无意义）。
+    extra（v0.11.0f）：合并进请求体的额外字段，如 dashscope 的 {"enable_search": True}
+    （联网搜索）——用于把"检索"从被抓取型后端垄断中解放出来。"""
     import time as _t
     key = _load_keys().get(name)
     if not key:
         raise RuntimeError(f"provider {name} 无 key（env MJC_{name.upper()}_KEY 或 keys.local.json）")
     url = endpoint_of(name) + "/chat/completions"
-    body = json.dumps({
+    payload = {
         "model": model or MODELS[name],
         "messages": messages,
         "temperature": temperature,
         "max_tokens": max_tokens,
         "stream": False,
-    }).encode("utf-8")
+    }
+    if extra:
+        payload.update(extra)
+    body = json.dumps(payload).encode("utf-8")
     last_exc = None
     for attempt in range(max(retries, 1)):
         req = urllib.request.Request(url, data=body, method="POST", headers={

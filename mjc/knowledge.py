@@ -33,6 +33,15 @@ API：fetch_evidence(query) -> {"backend": str, "snippets": [{title,url,text}], 
          {"backend": "sogou+bing", "snippets": [...], "fetched": int, "backends_tried": [...],
           "backend_status": {name: {status, note, at}}}（backend_status 为 v0.11.0 新增）
      backend_health() -> 最近一次各后端状态快照（探活用）
+
+【重要负面结论 · 2026-09-13 实测】**不要把"模型中介搜索"当证据源**：
+  尝试用 dashscope 的 enable_search 替代被封的抓取后端，结果不可信——
+    · 要求模型逐字引用检索片段（JSON+snippet）→ **编造**：同一问题三次给出 1973 / 空 / 1975
+      三个不同年份，还各配了看似合理的假来源（safecall.org.hk、seniorhelpline.hk）；真值 2009。
+    · 改用自然语言问法 → 同一问题先连给 2009×3，随后又连给 1972×2（"一致地错"）。
+  机理：模型拿到的是"答案"，并没有可引用的原文；逼它引用必然产生假证据。加一致性门也挡不住
+  （一致 ≠ 正确）。故该后端已被移除，仅保留此结论；可靠证据请走 cmd 后端接正规搜索 API。
+
 """
 import html
 import json

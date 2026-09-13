@@ -195,13 +195,14 @@
  "knowledge": {
   "enabled": false,
   "backends": [
+   "so360",
    "sogou",
    "bing",
    "baidu"
   ],
   "max_per_review": 3,
   "timeout": 12,
-  "note": "v0.11.0 实测（2026-09-13 本机）：sogou 返回 HTTP 403、baidu 返回反爬验证页、bing 可用但对具体实体召回差；ddg/startpage 等境外端点不可达。抓取路线已到头——要可靠证据请用 cmd 后端接正规搜索 API：export MJC_KNOWLEDGE_CMD='curl -s \"https://<api>/search?q={query}&key=$KEY\"'（stdout 输出 {\"snippets\":[{\"title\",\"url\",\"text\"}]} 或数组），并把 \"cmd\" 加入 backends。探活：python3 -m mjc.cli knowledge-probe"
+  "note": "v0.11.0f：**不要用模型中介搜索当证据源**。实测 dashscope enable_search：要求它逐字引用检索片段 → 编造（同一问题三次给出 1973/空/1975 三个假年份+假来源）；自然语言问法 → 同一问题先给 2009×3、后给 1972×2（一致性门会『一致地错』）。结论：模型拿到的是答案而非原文，逼它引用必然造假，一致性无法保证正确 → 不得进证据门。抓取型后端（so360/sogou/bing/baidu）仍会被反爬长期封禁；可靠证据请用 cmd 后端接正规搜索 API：MJC_KNOWLEDGE_CMD='curl -s \"https://<api>/search?q={query}&key=$KEY\"'。"
  },
  "falsifier": {
   "enabled": true,
