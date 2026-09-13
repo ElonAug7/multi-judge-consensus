@@ -30,7 +30,7 @@ jobs:
                    test_screen_toggle test_mcp test_factcheck test_knowledge \
                    test_repair test_switch test_falsifier test_resample \
                    test_evidence_gate test_evidence_merge test_evidence_independence \
-                   test_dissent_guard test_evidence_revise test_ipv4_pref \
+                   test_backend_health test_dissent_guard test_evidence_revise test_ipv4_pref \
                    test_parallel_search test_hallucination; do
             echo "== $t =="
             python3 tests/$t.py

@@ -195,7 +195,8 @@
    "baidu"
   ],
   "max_per_review": 3,
-  "timeout": 12
+  "timeout": 12,
+  "note": "v0.11.0 实测（2026-09-13 本机）：sogou 返回 HTTP 403、baidu 返回反爬验证页、bing 可用但对具体实体召回差；ddg/startpage 等境外端点不可达。抓取路线已到头——要可靠证据请用 cmd 后端接正规搜索 API：export MJC_KNOWLEDGE_CMD='curl -s \"https://<api>/search?q={query}&key=$KEY\"'（stdout 输出 {\"snippets\":[{\"title\",\"url\",\"text\"}]} 或数组），并把 \"cmd\" 加入 backends。探活：python3 -m mjc.cli knowledge-probe"
  },
  "falsifier": {
   "enabled": true,

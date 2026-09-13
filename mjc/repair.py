@@ -183,8 +183,10 @@ def evidence_check(task, old_vals, new_vals, min_snippets=2, merge=True):
     """执行一次证据检索并统计支持度（不读开关；知识证据门、CLI 调试与演示共用）。
     merge=True（默认，v0.9.1）走多后端合并检索；merge=False 保持旧「首个非空后端」路径。
     v0.11.0：检索查询只含问题句、不含 old/new 值——否则证据门自我证明（见 _evidence_query）。
+    v0.11.0b：读后端健康状态，区分「检索不到证据」与「根本没检索成」（抓取型后端被反爬拦截时，
+    旧实现一律记 0 条 → 静默判 insufficient，真因不可见）。全后端被拦截 → verdict=error 且带 note。
     返回 {"verdict": supported|insufficient|error, "support", "n_snippets", "min_snippets",
-          "query", "backend", "supporting": [{title,url,excerpt}...]}；不抛出。
+          "query", "backend", "supporting": [...], "backends": {name: {status,note,at}}}；不抛出。
     基础设施异常 → verdict=error（调用方需保守处理，不得放行）。"""
     try:
         ns = max(1, int(min_snippets))
@@ -193,7 +195,14 @@ def evidence_check(task, old_vals, new_vals, min_snippets=2, merge=True):
     query = _evidence_query(task, old_vals, new_vals)
     try:
         from mjc import knowledge
+        pre = knowledge.backend_health() if hasattr(knowledge, "backend_health") else {}
         res = knowledge.fetch_evidence(query, merge=merge)
+        try:  # 只取本次调用期间**发生变化**的后端状态（快照比对，不依赖时钟精度）
+            post = knowledge.backend_health() if hasattr(knowledge, "backend_health") else {}
+            status = {n: v for n, v in (post or {}).items()
+                      if (pre.get(n) or {}).get("at") != (v or {}).get("at")}
+        except Exception:
+            status = {}
     except Exception as e:  # noqa：基础设施异常，保守（error ≠ 支持）
         return {"verdict": "error", "support": 0, "n_snippets": 0, "min_snippets": ns,
                 "query": query, "note": str(e)[:160]}
@@ -207,9 +216,20 @@ def evidence_check(task, old_vals, new_vals, min_snippets=2, merge=True):
                 samples.append({"title": str(sn.get("title") or "")[:60],
                                 "url": str(sn.get("url") or "")[:120],
                                 "excerpt": str(sn.get("text") or "")[:80]})
-    return {"verdict": "supported" if support >= ns else "insufficient",
-            "support": support, "n_snippets": len(snippets), "min_snippets": ns,
-            "query": query, "backend": (res or {}).get("backend"), "supporting": samples}
+    out = {"verdict": "supported" if support >= ns else "insufficient",
+           "support": support, "n_snippets": len(snippets), "min_snippets": ns,
+           "query": query, "backend": (res or {}).get("backend"), "supporting": samples}
+    if status:
+        out["backends"] = status
+    blocked = sorted(n for n, v in status.items() if (v or {}).get("status") == "blocked")
+    healthy = sorted(n for n, v in status.items() if (v or {}).get("status") == "ok")
+    if support < ns and blocked and not healthy:
+        # 一条都没检索成 → 这是基础设施故障，不是"没有证据"（保守方向不变：仍阻断）
+        out["verdict"] = "error"
+        out["note"] = f"检索后端全部被反爬拦截（{','.join(blocked)}）→ 无法判断，保守阻断"
+    elif support < ns and blocked:
+        out["note"] = f"部分后端被拦截（{','.join(blocked)}）；已成功后端中无支持证据"
+    return out
 
 
 def _evidence_gate(task, old_vals, new_vals):

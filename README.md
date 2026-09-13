@@ -57,6 +57,12 @@ Detect → arbitrate → repair → re-check — engineered so the system never 
 - **External knowledge (opt-in)** (`mjc/knowledge.py`) — arbitration can pull web evidence snippets
   (Bing/Sogou/Baidu HTML backends, or a custom command backend; off by default, cached & rate-limited) so
   refutation/confirmation is grounded in retrievable sources rather than model memory alone.
+  **v0.11.0 reality check (measured 2026-09-13):** the scraped backends are effectively dead — Sogou
+  returns HTTP 403, Baidu returns its anti-bot page, Bing works but has poor recall for specific entities,
+  and overseas endpoints are unreachable from this host. Each backend now records a health status
+  (`ok` / `blocked` / `unparsed` / `error`) that is surfaced by `evidence_check`, so "we got blocked" is no
+  longer reported as "no evidence exists"; probe with `python3 -m mjc.cli knowledge-probe`. For dependable
+  evidence, wire a real search API through the `cmd` backend (`MJC_KNOWLEDGE_CMD`).
 - **Dual-producer repair** (`mjc/repair.py`) — two vendors revise independently under the same rules.
   v0.7.2 value-level consensus: cross-model wording differs naturally, so "near-identical text" was too strict
   (blocked every real fix in A/B pilot C5). Agreements are now judged on **numeric value sets** — equal sets
