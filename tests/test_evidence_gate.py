@@ -269,6 +269,17 @@ def test_all_backends_retrieval():
     print("  ✅ 检索广度：默认问遍全部健康后端；all_backends=False 回到早停路径")
 
 
+def test_evidence_precedence_clause():
+    """v0.11.0c：证据段必须显式声明优先级——实测生产者面对摆在眼前的证据仍只敢弱化
+    （glm-4-flash 把 1997 改成「成立年份待确认」），因为仲裁的『未确认不得替换』压过了证据段。"""
+    rules = repair._evidence_rules(["香港平安鐘協會有限公司由2009年成立至今"])
+    assert "【优先级】" in rules, rules
+    assert "优先于" in rules and "未确认" in rules, rules
+    assert "2009" in rules
+    assert repair._evidence_rules([]) == ""
+    print("  ✅ 证据优先级：注入证据时显式声明其优先于仲裁『未确认』判定")
+
+
 def test_value_boundary_matching():
     """v0.11.0c 精度：纯数字值按**数字边界**匹配——'2009' 不得命中版本号 '20200925'。
     旧实现裸子串匹配，实测 bing 页面含 v=20200925b → 会给出假支持（放行幻觉的通道）。"""
@@ -298,6 +309,7 @@ def main():
     test_resample_inconclusive_evidence_off_blocks()
     test_evidence_query_build()
     test_value_boundary_matching()
+    test_evidence_precedence_clause()
     test_all_backends_retrieval()
     print("== 知识证据门全部通过 ✅ ==")
 
