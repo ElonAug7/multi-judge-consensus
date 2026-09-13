@@ -306,15 +306,13 @@ def _evidence_revise_cfg():
 
 
 def _fetch_revise_evidence(task, prev, max_snippets=6):
-    """给修订者先取证：query = 任务(≤80字) + 原文数值；返回片段文本列表（失败 → []）。"""
+    """给修订者先取证：query = 题目(≤80字)；返回片段文本列表（失败 → []）。
+    注意：**不得拼入原文旧值**——旧值是待核验的错误假设，会把检索带偏。"""
     try:
         from mjc import knowledge
     except Exception:
         return []
     q = (task or "").strip()[:80]
-    vals = sorted(_values(prev))
-    if vals:
-        q = (q + " " + " ".join(vals)).strip()
     if not q:
         return []
     try:
