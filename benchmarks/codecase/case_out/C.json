@@ -1,0 +1,27 @@
+{
+ "reviewed": true,
+ "kind": "code",
+ "verdict": "reject",
+ "api_calls": 7,
+ "memory_source": "mnemosyne",
+ "sha": "8b48fb48d4",
+ "len": 14043,
+ "screened": false,
+ "arbitration": {
+  "n": 4,
+  "confirmed": 0,
+  "refuted": 0,
+  "unknown": 4
+ },
+ "falsifier": {
+  "model": "dashscope:qwen-max",
+  "n": 3,
+  "confirmed": 0,
+  "escalated": false
+ },
+ "task_id": "805dd427",
+ "stage": "code",
+ "arm": "C_mjc_full",
+ "exit_code": 3,
+ "latency_s": 345.79
+}

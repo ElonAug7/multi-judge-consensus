@@ -140,6 +140,35 @@ Layering: 1 deterministic catch by the verifier (0 LLM cost), 17 by committee + 
 Reproduce: `python3 -m mjc.cli bench --set v1-full` (≈ ¥0.6 in API spend).
 History is appended to `logs/bench-history.jsonl` for regression tracking.
 
+### Code-review case study (2026-09-13)
+
+A **518-line / 14,044-char** Python module (an order-settlement engine, compiles clean) was written with
+**12 defects deliberately injected inside MJC's declared scope** — docstring-vs-implementation mismatches (4),
+numeric/date errors (4), logical contradictions such as dead or unreachable branches (4) — plus **4
+correct-but-suspicious decoys** (an inclusive `>=` boundary, a documented discount-stacking order,
+`ROUND_HALF_UP` quantization, a negative-value clamp) to measure false positives. Compile/runtime errors were
+excluded on purpose: those belong to the test suite, not to MJC.
+
+| Arm | API calls | Latency | Cost | Defects found | False positives | Output usable |
+|---|---|---|---|---|---|---|
+| A Deterministic verifier (no API) | 0 | 0.0s | 0 | 0/12 | 0 | yes |
+| B Single-model self-check (glm-4-plus) | 1 | 88s | ~0.21 | 4/12 | n/a | **no** |
+| **C MJC full pipeline** | **7** | **346s** | **0.29192** | **6/12** | **0** | **yes** |
+
+- **Zero false positives.** All 6 issues MJC raised were verified against the sealed ground truth, and none of
+  the 4 decoys was reported.
+- **The single-model arm did not produce usable output.** Its response hit the output-token ceiling, leaving the
+  JSON array unterminated and unparseable; from item 11 onward it also fell into a repetition loop — roughly
+  104 of the 114 recoverable objects restate the same complaint (~28x duplication).
+- **Recall by category** (MJC / single model): doc-vs-impl 2/4 vs 1/4, numeric 2/4 vs 2/4, logic 2/4 vs 1/4.
+- **Cost per defect found**: 0.049 for MJC vs ~0.054 for the single-model arm (which was unusable).
+  59,678 tokens in total (51,545 prompt / 8,133 completion).
+- **Where MJC is weak (stated plainly):** the 6 misses all lack a direct textual contradiction — they require
+  business-semantics reasoning (tax computed on the pre-discount subtotal, a refund path that can exceed the
+  amount paid, an inconsistent coupon threshold, an inverted top-N sort, a missing "unopened" check, a delivery
+  estimate whose comment and constant disagree). MJC is a **pre-delivery proofreader**, not a replacement for
+  unit tests. The 12 defects are constructed, not a production distribution, and the sample is one module.
+
 ## Getting started
 
 > Step-by-step walkthrough for first-time users (key setup, first review, web console,

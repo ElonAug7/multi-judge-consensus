@@ -1,0 +1,106 @@
+{
+ "case": "order_engine.py 518 行 / 14044 字符 / 12 注入缺陷 / 4 处正确但可疑",
+ "verified_input": {
+  "file": "order_engine.py",
+  "md5": "e66d6eec669a193d209c891b91e2ebfc",
+  "lines": 518,
+  "py_compile": "pass",
+  "read_by_runner_after_last_write": true
+ },
+ "arms": {
+  "A_verifier": {
+   "calls": 0,
+   "latency_s": 0.0,
+   "cost_yuan": 0.0,
+   "n_issues": 0,
+   "hits": [],
+   "recall": "0/12",
+   "fp": 0,
+   "output_usable": true,
+   "note": "确定性层只查文中求和/百分比跨度/日期跨度，不查代码语义，故本案例 0 命中（符合设计范围）"
+  },
+  "B_single_model": {
+   "calls": 1,
+   "latency_s": 88.07,
+   "cost_yuan_estimated": 0.215,
+   "hits": [
+    "D2",
+    "D5",
+    "D7",
+    "D8"
+   ],
+   "recall": "4/12",
+   "fp": null,
+   "output_usable": false,
+   "note": "输出被 max_tokens=8000 截断（JSON 无闭合括号）→ 不可解析；且第 11 条起进入重复循环，114 个可抢救对象中约 104 个为同一句话反复刷（重复约 28 倍）"
+  },
+  "C_mjc_full": {
+   "calls": 7,
+   "latency_s": 345.79,
+   "cost_yuan": null,
+   "tokens": null,
+   "verdict": "reject",
+   "n_issues": 6,
+   "hits": [
+    "D1",
+    "D2",
+    "D3",
+    "D5",
+    "D6",
+    "D7"
+   ],
+   "recall": "6/12",
+   "fp": 0,
+   "output_usable": true,
+   "note": "6 条意见全部指向真缺陷，零误报；仲裁层因独立仲裁员池为空全部 unknown"
+  }
+ },
+ "by_category": {
+  "doc_vs_impl (D1,D4,D7,D11)": {
+   "C": "2/4 (D1,D7)",
+   "B": "1/4 (D7)"
+  },
+  "numeric (D2,D5,D9,D12)": {
+   "C": "2/4 (D2,D5)",
+   "B": "2/4 (D2,D5)"
+  },
+  "logic (D3,D6,D8,D10)": {
+   "C": "2/4 (D3,D6)",
+   "B": "1/4 (D8)"
+  }
+ },
+ "missed_by_C": [
+  "D4 计税基数用折前而非折后",
+  "D8 退款可超过实付",
+  "D9 优惠券阈值 0.5 与 0.8 不一致",
+  "D10 top_n 排序取了最小 N 笔",
+  "D11 未校验拆封",
+  "D12 days=3 却称 5 个工作日"
+ ],
+ "hit_detail_C": {
+  "D3": [
+   1
+  ],
+  "D6": [
+   2
+  ],
+  "D2": [
+   3
+  ],
+  "D7": [
+   4
+  ],
+  "D5": [
+   5
+  ],
+  "D1": [
+   6
+  ]
+ },
+ "hit_detail_B": {
+  "D7": "items 1-4",
+  "D2": "items 5-7",
+  "D5": "items 8-10",
+  "D8": "items 11+（重复~104 次）"
+ }
+}
