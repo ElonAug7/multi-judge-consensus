@@ -532,6 +532,9 @@ def main():
     p_auto.add_argument("--content", default=None, help="直接给文本")
     p_auto.add_argument("--task", default=None, help="原始任务（记忆检索/审查用）")
     p_auto.add_argument("--kind", default=None, help="message（默认）| code（代码任务收尾审查）")
+    p_auto.add_argument("--channel", default=None,
+                        help="调用方标识（v0.12.1）：openclaw=session:<id> / DSH 自审=dsh:self / 手动=gate:<stage>"
+                             " —— 用于在 WebUI 与 logs/auto 中区分是谁触发的审查")
     p_auto.add_argument("--no-memory", action="store_true", help="跳过记忆上下文检索")
     p_auto.set_defaults(fn=cmd_auto)
 

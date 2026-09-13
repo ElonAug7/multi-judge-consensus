@@ -342,6 +342,9 @@ def cmd_auto(args):
             return 1
     else:
         ev = {"content": args.content or ""}
+        # v0.12.1：--channel 让调用方自报身份（此前只能走 --in JSON，CLI 直调时日志里是 "?"）
+        if getattr(args, "channel", None):
+            ev["channel"] = args.channel
     code, out = auto_review(
         ev.get("content") or "",
         channel=ev.get("channel") or "?",
