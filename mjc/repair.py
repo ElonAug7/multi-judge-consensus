@@ -424,10 +424,32 @@ def _evidence_revise_cfg():
     return bool(enabled), max(1, min(max_snip, 12))
 
 
+def _healthy_backends(skip_bing=True):
+    """当前健康且有召回价值的后端名（bing 实测"可用但对具体实体召回为 0"，故默认排除）。"""
+    try:
+        from mjc import knowledge
+        names = []
+        for n, v in (knowledge.backend_health() or {}).items():
+            if (v or {}).get("status") == "ok" and not (skip_bing and n == "bing"):
+                names.append(n)
+        return names
+    except Exception:
+        return []
+
+
 def _fetch_revise_evidence(task, prev, max_snippets=6):
-    """给修订者先取证：query = 问题句(≤80字，v0.11.0 去指令模板)；返回片段文本列表（失败 → []）。
+    """给修订者先取证：query = 问题句(≤80字，去指令模板)；返回片段文本列表（失败 → []）。
     注意：**不得拼入原文旧值**——旧值是待核验的错误假设，会把检索带偏。
-    也不得拼入任何候选新值（那是待验证的结论，不是检索线索）。"""
+    也不得拼入任何候选新值（那是待验证的结论，不是检索线索）。
+
+    v0.11.0h（关键修复）：证据源是**间歇可用**的，而"耐心"原先只加在证据门上——可证据门要等到
+    "已有人提出值替换"才运行，生产者拿不到证据就永远不会提出替换，形成死循环。实测 C9b：
+    11 题全程 revs=0，csqa-07 注入的 6 条片段全是 bing 的通用「香港」页（0 条含 2009）。
+    现在本函数：
+      ① 问遍所有健康后端（不再按 min_total=3 早停，避免 bing 的垃圾凑数截断检索）；
+      ② 若只有 bing 这类"可用但无召回"的后端，按 `repair.evidence_revise.wait_for_window_sec`
+         （默认 0=关）等窗口重试，而不是把垃圾喂给生产者。
+    """
     try:
         from mjc import knowledge
     except Exception:
@@ -436,16 +458,26 @@ def _fetch_revise_evidence(task, prev, max_snippets=6):
     if not q:
         return []
     try:
-        res = knowledge.fetch_evidence(q, merge=True, min_total=3, max_backends=3)
+        from mjc import settings as _settings
+        cfg = ((_settings.load().get("repair") or {}).get("evidence_revise") or {})
+        wait_budget = max(0.0, float(cfg.get("wait_for_window_sec", 0) or 0))
     except Exception:
-        return []
-    snips = (res or {}).get("snippets") or []
-    out = []
-    for s in snips[:max_snippets]:
-        t = (s.get("text") or s.get("title") or "").strip()
-        if t:
-            out.append(t[:300])
-    return out
+        wait_budget = 0.0
+    import time as _time
+    deadline = _time.time() + wait_budget
+    while True:
+        out = []
+        try:
+            res = knowledge.fetch_evidence(q, merge=True, min_total=999, max_backends=8)
+        except Exception:
+            res = None
+        for s in ((res or {}).get("snippets") or [])[:max_snippets]:
+            t = (s.get("text") or s.get("title") or "").strip()
+            if t:
+                out.append(t[:300])
+        if _healthy_backends() or _time.time() >= deadline:
+            return out
+        _time.sleep(min(20.0, max(5.0, deadline - _time.time())))
 
 
 def _evidence_rules(snips):
@@ -501,7 +533,9 @@ def dual_revise(task, prev, feedback, specs=None, timeout=120):
     revs = [_call_one(s, messages, timeout=timeout) for s in specs]
     ok = [r for r in revs if r.get("text")]
     result = {"mode": "incomplete", "applied": prev, "revs": revs, "tokens": 0,
-              "evidence_revise": {"enabled": ev_on, "snippets": len(ev_snips)}}
+              # v0.11.0h：记录取证来源，便于事后判断"是没证据"还是"证据是垃圾"
+              "evidence_revise": {"enabled": ev_on, "snippets": len(ev_snips),
+                                  "healthy_backends": _healthy_backends()}}
     if len(ok) < 2:
         # v0.11.0：生产者失败必须外显（实测 glm-4-plus 欠费 429 时，结果只写"不足 2 路"，
         # 无人能看出真因，实验被静默降级）。

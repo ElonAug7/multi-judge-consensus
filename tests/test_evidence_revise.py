@@ -92,6 +92,42 @@ def run():
         j4 = "\n".join(str(m.get("content")) for m in (captured[0] if captured else []))
         check("检索异常 → 静默降级（无证据段、仍产出）", "外部检索证据" not in j4 and r4.get("mode") in ("agreed", "disagreed", "incomplete"))
 
+        # ---- 6) v0.11.0h：只有 bing 可用时必须等窗口，而不是把垃圾喂给生产者 ----
+        import mjc.knowledge as K
+
+        class _FakeK:
+            pass
+
+        calls = {"n": 0}
+
+        def flaky_fetch(q, *a, **k):
+            calls["n"] += 1
+            if calls["n"] < 2:
+                K.BACKEND_STATUS.clear()
+                K._note_status("bing", "ok")
+                return {"backend": "bing", "snippets": [{"text": "香港特别行政区简介", "title": ""}]}
+            K.BACKEND_STATUS.clear()
+            K._note_status("sogou", "ok")
+            return {"backend": "sogou",
+                    "snippets": [{"text": "香港平安鐘協會有限公司由2009年成立至今", "title": ""}]}
+
+        old_fe, old_status = K.fetch_evidence, dict(K.BACKEND_STATUS)
+        old_load2 = settings.load
+        try:
+            K.fetch_evidence = flaky_fetch
+            settings.load = lambda: {"repair": {"evidence_revise": {"enabled": True,
+                                                                    "wait_for_window_sec": 30}}}
+            out = repair._fetch_revise_evidence("香港平安钟协会最早成立于哪一年？", "成立于1997年", 6)
+            check("只有 bing 时等窗口重试，直到有真实后端", calls["n"] >= 2 and "2009" in " ".join(out))
+            settings.load = lambda: {"repair": {"evidence_revise": {"enabled": True}}}
+            calls["n"] = 0
+            repair._fetch_revise_evidence("q", "p", 6)
+            check("未开启等待（默认 0）→ 单次调用不等待", calls["n"] == 1)
+        finally:
+            K.fetch_evidence = old_fe
+            settings.load = old_load2
+            K.BACKEND_STATUS.clear(); K.BACKEND_STATUS.update(old_status)
+
         # ---- 5) _evidence_rules 格式 ----
         txt = repair._evidence_rules(["片段A", "片段B"])
         check("_evidence_rules：编号 + 约束句", "1. 片段A" in txt and "2. 片段B" in txt and "忽略之" in txt)
