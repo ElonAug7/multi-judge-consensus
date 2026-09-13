@@ -2,6 +2,8 @@
   <img src="assets/logo-wide.svg" alt="Multi-Judge Consensus" width="560"/>
 </p>
 
+[English](README.md) · [简体中文](README.zh.md)
+
 # Multi-Judge Consensus (MJC)
 
 **A cross-vendor model committee that reviews agent-generated content before it ships.**
@@ -44,7 +46,7 @@ content
   └─ ⑦ verdict       result + token usage + cost estimate, fully logged
 ```
 
-### Zero-hallucination design (v0.9.1)
+### Zero-hallucination design (v0.12.1)
 
 Detect → arbitrate → repair → re-check — engineered so the system never "fixes" a fact into a different error:
 
@@ -96,28 +98,28 @@ Detect → arbitrate → repair → re-check — engineered so the system never 
   hedge or soften instead of substituting a guess (reviewer suggestions are leads, not truth).
 - **Gate default = full committee** — deliverable gates skip the cheap screen by default (`--screen` to opt back in).
 
-### 轻量化（v0.11.0j/k，生产向；实验默认不变）
+### Lightweighting (production-oriented; experiment defaults unchanged)
 
-实测开销（2026-09-13，C9f 单题，`api_calls`）：干净内容 **4 次**、普通非 pass **6–18 次**、
-全链（委员会+仲裁+证伪+两轮修订+复审）**32 次**。重尾集中在**非 pass 路径**，可按下面几档削减：
+Measured cost per question (2026-09-13, experiment arm C9f, `api_calls`): clean content **4 calls**,
+ordinary non-pass **6-18**, full chain (committee + arbitration + falsifier + two repair rounds +
+re-review) **32**. The heavy tail sits on the non-pass path:
 
-| 杠杆 | 配置 | 实测/预期 | 代价 |
+| Lever | Setting | Measured / expected | Trade-off |
 |---|---|---|---|
-| **浏览器检索后端** | `knowledge.backends=["browser"]` | 证据等待 **300s → 2.5s**（无反爬、无冷却） | 需本机有 Chrome |
-| **批量仲裁** | `factcheck.batch=true` | 仲裁块 **意见数×2 → 2** 次（4 条时 8→2） | 单次调用需复核多条，判断略粗 |
-| **初筛** | `screen_enabled=true` + `screen_model` | 干净内容 **1 次**放行（跳过委员会 3 次） | 漏检风险由 `screen_conf` 控制 |
-| **经济档委员会** | `current.tier="eco"` | 3 模型 → 2 模型 | 检出率需复测 |
-| **少一轮复审** | 调用方 `--max-rev 1` | 省掉一整轮（委员会+证伪+仲裁） | 少一次收敛机会 |
+| **Browser retrieval backend** | `knowledge.backends=["browser"]` | evidence wait **300s -> 2.5s** (no anti-bot, no cooldown) | needs Chrome on the host |
+| **Batch arbitration** | `factcheck.batch=true` | arbitration block **issues x arbiters -> 2** calls (8 -> 2 at 4 issues) | one call must judge several issues; slightly coarser |
+| **Screening** | `screen_enabled=true` + `screen_model` | clean content passes in **1 call** (skips the 3-seat committee) | miss risk bounded by `screen_conf` |
+| **Economy tier** | `current.tier="eco"` | 3 models -> 2 models | detection rate needs re-testing |
+| **Single repair round** | caller passes `--max-rev 1` | saves a whole round (committee + falsifier + arbitration) | one less chance to converge |
 
-默认全部保持不变（`batch=false`、C 臂显式 `no_screen=True`、证据门 opt-in），
-以免污染 A/B 口径；上面是**生产部署**时的推荐配方。
-
+Every default stays as-is (`batch=false`, experiment arms pass `no_screen=True`, evidence gates are
+opt-in) so A/B comparisons remain valid; the table above is the recommended **production** recipe.
 
 **Tier presets** (one-click in the admin console):
 
 | Tier | Committee | Strategy |
 |---|---|---|
-| Economy | 2× budget models | cheapest, screen-first |
+| Economy | 2x budget models | cheapest, screen-first |
 | Standard | 2 budget + 1 flagship | default (benchmark-verified) |
 | Strict | flagship only, no screen | maximum rigor |
 
@@ -175,6 +177,8 @@ Keys are read from environment variables (`MJC_DEEPSEEK_KEY`, `MJC_GLM_KEY`, `MJ
 | `gate --stage design\|code\|deliver --task --content` | stage gate; exit codes pass=0 / revise=2 / reject=3 |
 | `bench [--set quick\|v1-full] [--ablation 0,1,2]` | red-team benchmark with history |
 | `dispose --in <json>` | record per-issue dispositions (adopted / rejected with reason) |
+| `savings [--days N] [--json]` | savings ledger: tokens / cost / wall-clock avoided by each mechanism |
+| `knowledge-probe` | probe every retrieval backend and report health (ok / blocked / unparsed / error) |
 | `switch on\|off\|status` | pause/resume the auto-review hook (0 cost, fully silent; manual commands unaffected) |
 | `webui` | local admin console (127.0.0.1:8123) |
 | `mcp` | MCP stdio server |
