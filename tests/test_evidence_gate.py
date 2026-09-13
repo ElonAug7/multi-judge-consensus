@@ -295,6 +295,50 @@ def test_value_boundary_matching():
     print("  ✅ 值匹配精度：数字边界匹配（版本号/CSS 噪音不构成证据支持）")
 
 
+def test_wait_for_window():
+    """v0.11.0g：证据源间歇可用——全后端被封时按预算等窗口重试，而不是立刻放弃；
+    超时仍返回 error（保守方向不变），并记录等待次数与时长。"""
+    import time as _t
+    seq = []
+    old_check, old_load = repair.evidence_check, settings.load
+    try:
+        calls = {"n": 0}
+
+        def flaky(task, old_vals, new_vals, **k):
+            calls["n"] += 1
+            if calls["n"] < 3:                      # 前两次：全后端被封
+                return {"verdict": "error", "support": 0, "n_snippets": 0, "note": "全被拦截"}
+            return {"verdict": "supported", "support": 2, "n_snippets": 2}   # 第三次窗口打开
+
+        repair.evidence_check = flaky
+        settings.load = lambda: {"repair": {"evidence_gate": {"enabled": True, "wait_for_window_sec": 60}}}
+        r = repair._evidence_gate("题目", {"1997"}, {"2009"})
+        assert r["verdict"] == "supported" and calls["n"] == 3, (r, calls)
+        assert (r.get("wait") or {}).get("attempts") == 3, r
+
+        def always_blocked(task, old_vals, new_vals, **k):
+            calls["n"] += 1
+            return {"verdict": "error", "support": 0, "n_snippets": 0}
+
+        repair.evidence_check = always_blocked
+        calls["n"] = 0
+        t0 = _t.time()
+        settings.load = lambda: {"repair": {"evidence_gate": {"enabled": True, "wait_for_window_sec": 1}}}
+        r2 = repair._evidence_gate("题目", {"1997"}, {"2009"})
+        assert r2["verdict"] == "error" and _t.time() - t0 < 20, r2
+        assert calls["n"] >= 1, calls
+
+        # 开关关闭（默认 0）→ 单次调用，不等待
+        repair.evidence_check = always_blocked
+        calls["n"] = 0
+        settings.load = lambda: {"repair": {"evidence_gate": {"enabled": True}}}
+        repair._evidence_gate("题目", {"1997"}, {"2009"})
+        assert calls["n"] == 1, calls
+    finally:
+        repair.evidence_check, settings.load = old_check, old_load
+    print("  ✅ 证据窗口等待：被封时重试到窗口打开；超时/未开启则单次返回（保守不变）")
+
+
 def main():
     print("== 知识证据门 v1 离线测试（零 API/零网络）==")
     test_gate_supports_apply()
@@ -311,6 +355,7 @@ def main():
     test_value_boundary_matching()
     test_evidence_precedence_clause()
     test_all_backends_retrieval()
+    test_wait_for_window()
     print("== 知识证据门全部通过 ✅ ==")
 
 

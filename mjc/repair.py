@@ -262,7 +262,12 @@ def evidence_check(task, old_vals, new_vals, min_snippets=2, merge=True, all_bac
 def _evidence_gate(task, old_vals, new_vals):
     """知识证据门（settings.repair.evidence_gate，默认关 · v0.9.0 引入 / v0.9.1 合并检索）。
     未启用/配置不可读 → None（不引入约束）；启用 → evidence_check 结果（默认 merge=True，
-    可被 merge_backends=false 关回旧单后端路径；检索异常 → verdict=error，上层保守阻断）。"""
+    可被 merge_backends=false 关回旧单后端路径；检索异常 → verdict=error，上层保守阻断）。
+
+    v0.11.0g：`wait_for_window_sec`（默认 0=关）——抓取型证据源是**间歇可用**的（实测 sogou
+    窗口只开一两次查询就被反爬封，随后数小时 blocked）。拿到"全后端被封"就立刻放弃，等于必然
+    拿不到证据（C9b 的预检就因此反复拒跑）。开启后按冷却节奏重试，直到窗口打开或超时；
+    超时仍返回 error（保守方向不变）。"""
     try:
         from mjc import settings as _settings
         cfg = ((_settings.load().get("repair") or {}).get("evidence_gate") or {})
@@ -270,9 +275,26 @@ def _evidence_gate(task, old_vals, new_vals):
             return None
     except Exception:
         return None
-    return evidence_check(task, old_vals, new_vals, min_snippets=cfg.get("min_snippets", 2),
-                          merge=bool(cfg.get("merge_backends", True)),
-                          all_backends=bool(cfg.get("all_backends", True)))
+    try:
+        wait_budget = max(0.0, float(cfg.get("wait_for_window_sec", 0) or 0))
+    except (TypeError, ValueError):
+        wait_budget = 0.0
+    if wait_budget <= 0:
+        return evidence_check(task, old_vals, new_vals, min_snippets=cfg.get("min_snippets", 2),
+                              merge=bool(cfg.get("merge_backends", True)),
+                              all_backends=bool(cfg.get("all_backends", True)))
+    import time as _time
+    deadline, attempts, t0 = _time.time() + wait_budget, 0, _time.time()
+    while True:
+        attempts += 1
+        res = evidence_check(task, old_vals, new_vals, min_snippets=cfg.get("min_snippets", 2),
+                             merge=bool(cfg.get("merge_backends", True)),
+                             all_backends=bool(cfg.get("all_backends", True)))
+        if res.get("verdict") != "error" or _time.time() >= deadline:
+            res["wait"] = {"attempts": attempts, "waited_s": round(_time.time() - t0, 1),
+                           "budget_s": wait_budget}
+            return res
+        _time.sleep(min(20.0, max(5.0, deadline - _time.time())))
 
 
 def _block_note(reason):
