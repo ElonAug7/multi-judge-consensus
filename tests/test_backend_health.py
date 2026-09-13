@@ -203,6 +203,10 @@ def run():
                 self.stdout, self.stderr, self.returncode = out, err, 0
 
         old_run = _sp.run
+        # CI 上没有 Chrome：把二进制定位到必然存在的解释器，否则函数在 os.path.exists 处提前返回
+        # （本地有 Chrome 会掩盖这个问题——v0.11.0j 就是这样挂掉 CI 的）
+        old_bin = knowledge.BROWSER_BIN
+        knowledge.BROWSER_BIN = sys.executable
         knowledge.BACKEND_STATUS.clear()
         try:
             _sp.run = lambda *a, **k: _P(BAIDU_DOM)
@@ -224,6 +228,7 @@ def run():
             check("浏览器无输出 → error", sn3 == [] and knowledge.BACKEND_STATUS["browser"]["status"] == "error")
         finally:
             _sp.run = old_run
+            knowledge.BROWSER_BIN = old_bin
             knowledge.BACKEND_STATUS.clear()
 
         # ---- 5) cmd 插件口（接正规搜索 API 的唯一通道）状态可见 ----
