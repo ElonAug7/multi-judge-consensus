@@ -420,6 +420,35 @@ def cmd_evidence_gate(args):
     return 0 if r.get("verdict") == "supported" else 2
 
 
+def cmd_knowledge_probe(args):
+    """检索后端探活（v0.11.0）：逐个后端实打一次，报 status（ok/blocked/unparsed/empty/error）。
+    退出码：至少一个后端 ok=0 / 全部不可用=2。抓取型后端会被反爬拦截——本命令让这件事可见。"""
+    from mjc import knowledge
+    q = args.query or "香港平安钟协会最早成立于哪一年"
+    names = [b.strip() for b in (args.backends or "").split(",") if b.strip()] \
+        or list(knowledge.configured_backends())
+    out = {"query": q, "backends": {}}
+    for n in names:
+        fn = knowledge.BACKENDS.get(n)
+        if not fn:
+            out["backends"][n] = {"status": "unknown", "note": "未注册的后端"}
+            continue
+        try:
+            sn = list(fn(q, float(args.timeout)) or [])
+        except Exception as e:  # noqa
+            knowledge._note_exception(n, e)
+            sn = []
+        st = knowledge.backend_health().get(n) or {"status": "?"}
+        out["backends"][n] = {"status": st.get("status"), "n_snippets": len(sn),
+                              "note": st.get("note", ""),
+                              "first": ((sn[0].get("text") or sn[0].get("title") or "")[:80]
+                                        if sn else "")}
+    out["healthy"] = sorted(n for n, v in out["backends"].items() if v.get("status") == "ok")
+    out["blocked"] = sorted(n for n, v in out["backends"].items() if v.get("status") == "blocked")
+    print(json.dumps(out, ensure_ascii=False, indent=1))
+    return 0 if out["healthy"] else 2
+
+
 def cmd_repair(args):
     """双生产者修订共识：不同厂商各自修订 → 一致才采纳（防单模型引入新错误）。"""
     from mjc import repair as _rep
@@ -522,6 +551,13 @@ def main():
     p_eg.add_argument("--new", required=True, help="新值集合（逗号/空格分隔）")
     p_eg.add_argument("--min-snippets", type=int, default=2, help="放行所需支持片段数（默认 2）")
     p_eg.set_defaults(fn=cmd_evidence_gate)
+
+    p_kp = sub.add_parser("knowledge-probe",
+                          help="检索后端探活 v0.11.0：逐个实打，区分「被反爬拦截」与「真无结果」")
+    p_kp.add_argument("--query", default="")
+    p_kp.add_argument("--backends", default="", help="逗号分隔；默认取配置后端")
+    p_kp.add_argument("--timeout", type=float, default=12.0)
+    p_kp.set_defaults(fn=cmd_knowledge_probe)
 
     p_rep = sub.add_parser("repair", help="双生产者修订共识（不同厂商各自修订，一致才采纳）")
     p_rep.add_argument("--task", required=True)

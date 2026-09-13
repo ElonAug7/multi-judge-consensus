@@ -12,6 +12,17 @@ MJC · knowledge.py — 外部知识源（事实核查的证据检索层，零�
   - 默认关闭（off）：显式配置后才联网（保持“零依赖、纯本地”的默认姿态）
   - 守规矩：单次审查最多 N 次检索、同 query 24h 进程级缓存、后端间隔限速、可配超时
   - 证据只是线索：可能不相关/低质，消费方（仲裁）必须自行判别
+  - **v0.11.0 后端健康状态（重要）**：抓取型后端会被反爬拦截，而旧实现把"被拦截"和"真的没
+    检索到"都记成 0 条 → 证据门静默判 insufficient，真因不可见（2026-09-13 实测：sogou 返回
+    HTTP 403、baidu 返回「百度安全验证」1.4KB，二者稳定 0 条）。
+    现在每后端记录 status 并随结果返回 `backend_status`；`evidence_check` 据此区分"检索不到
+    证据"与"根本没检索成"，后者判 error（保守阻断 + 如实说明）。
+    **状态语义边界（勿混用）**：
+      · ok        — 成功解析出 ≥1 条片段
+      · blocked   — **服务可达但拒绝服务**：反爬验证页指纹，或 HTTP 401/403/429（限流/封禁）
+      · unparsed  — 拿到了页面但结果块正则 0 命中（页面结构变化 / 空页），非反爬
+      · empty     — 后端显式返回空（保留位）
+      · error     — **其它故障**：超时、DNS、连接失败、5xx、解析异常（非"被封"）
 
 配置（settings.json，可省略）：
   "knowledge": {"enabled": false, "backends": ["sogou","bing","baidu"], "max_per_review": 3, "timeout": 12}
@@ -19,7 +30,9 @@ MJC · knowledge.py — 外部知识源（事实核查的证据检索层，零�
 
 API：fetch_evidence(query) -> {"backend": str, "snippets": [{title,url,text}], "fetched": int}
      fetch_evidence(query, merge=True)（v0.9.1）-> 多后端合并结果：
-         {"backend": "sogou+bing", "snippets": [...], "fetched": int, "backends_tried": [...]}
+         {"backend": "sogou+bing", "snippets": [...], "fetched": int, "backends_tried": [...],
+          "backend_status": {name: {status, note, at}}}（backend_status 为 v0.11.0 新增）
+     backend_health() -> 最近一次各后端状态快照（探活用）
 """
 import html
 import json
@@ -37,6 +50,45 @@ _CACHE = {}          # query -> (ts, result)
 _CACHE_TTL = 24 * 3600
 _LAST_CALL = {}       # backend -> ts（限速）
 _MIN_INTERVAL = 2.0   # 同后端两次请求最小间隔（秒）
+
+BACKEND_STATUS = {}   # backend -> {"status","note","at"}（v0.11.0 健康状态，供门/探活消费）
+
+# 反爬/验证页指纹（命中即判 blocked，而非"没检索到"）
+BLOCK_MARKERS = (
+    "安全验证", "网络不给力", "请输入验证码", "验证码", "window.imgcode", "checksnuid",
+    "captcha", "robot check", "unusual traffic", "访问过于频繁",
+)
+
+
+def _note_status(name, status, note=""):
+    BACKEND_STATUS[name] = {"status": status, "note": (note or "")[:160], "at": time.time()}
+
+
+def _note_exception(name, exc):
+    """异常 → 状态分类（v0.11.0 语义边界，见模块 docstring）：
+    401/403/429 = 服务可达但拒绝服务（反爬/限流）→ blocked；其余（超时/DNS/解析/5xx）→ error。
+    这样 sogou 的 HTTP 403 与 baidu 的验证页归入同一语义：都是"被封了"，而不是"没检索到"。"""
+    code = getattr(exc, "code", None)
+    txt = str(exc)[:120]
+    if code in (401, 403, 429) or re.search(r"\b(401|403|429)\b", txt[:60]):
+        _note_status(name, "blocked", f"HTTP {code or '?'} 拒绝服务（反爬/限流）: {txt[:80]}")
+    else:
+        _note_status(name, "error", f"{type(exc).__name__}: {txt}")
+
+
+def _detect_block(html_text):
+    """返回反爬拦截原因（str）或 None。用于区分"被拦截"与"没结果"。"""
+    t = (html_text or "")[:20000].lower()
+    for m in BLOCK_MARKERS:
+        if m in t:
+            return m
+    return None
+
+
+def backend_health():
+    """最近一次各后端状态快照（探活用）：{name: {status, note, at}}"""
+    return {k: dict(v) for k, v in BACKEND_STATUS.items()}
+
 
 TAG_RE = re.compile(r"<[^>]+>")
 
@@ -129,56 +181,94 @@ def _http_get(url, timeout):
     return ""
 
 
-def _back_sogou(query, timeout):
-    h = _http_get("https://www.sogou.com/web?query=" + urllib.parse.quote(query), timeout)
-    blocks = re.findall(r'<div class="vrwrap"[^>]*>(.*?)(?=<div class="vrwrap"|$)', h, re.S)
+def _pack_blocks(blocks, limit=6):
+    """把抓取到的 HTML 结果块打包成 snippets（统一长度门槛）。"""
     out = []
-    for b in blocks[:6]:
+    for b in (blocks or [])[:limit]:
         txt = _strip_tags(b)
         if txt and len(txt) > 30:
             out.append({"title": txt[:90], "url": "", "text": txt[:400]})
+    return out
+
+
+def _back_sogou(query, timeout):
+    h = _http_get("https://www.sogou.com/web?query=" + urllib.parse.quote(query), timeout)
+    reason = _detect_block(h)
+    if reason:
+        _note_status("sogou", "blocked", f"反爬页指纹: {reason}")
+        return []
+    blocks = re.findall(r'<div class="vrwrap"[^>]*>(.*?)(?=<div class="vrwrap"|$)', h, re.S)
+    out = _pack_blocks(blocks)
+    _note_status("sogou", "ok" if out else "unparsed",
+                 "" if out else f"HTML {len(h)} 字符但命中 0 个 vrwrap 块")
     return out
 
 
 def _back_bing(query, timeout):
     h = _http_get("https://cn.bing.com/search?q=" + urllib.parse.quote(query), timeout)
+    reason = _detect_block(h)
+    if reason:
+        _note_status("bing", "blocked", f"反爬页指纹: {reason}")
+        return []
     blocks = re.findall(r'<li class="b_algo".*?</li>', h, re.S)
-    out = []
-    for b in blocks[:6]:
-        txt = _strip_tags(b)
-        if txt and len(txt) > 30:
-            out.append({"title": txt[:90], "url": "", "text": txt[:400]})
+    out = _pack_blocks(blocks)
+    _note_status("bing", "ok" if out else "unparsed",
+                 "" if out else f"HTML {len(h)} 字符但命中 0 个 b_algo 块")
     return out
 
 
 def _back_baidu(query, timeout):
     h = _http_get("https://www.baidu.com/s?ie=utf-8&wd=" + urllib.parse.quote(query), timeout)
-    if "安全验证" in h or len(h) < 5000:
-        return []  # 被反爬/限流
+    reason = _detect_block(h)
+    if reason:
+        _note_status("baidu", "blocked", f"反爬页指纹: {reason}")
+        return []
+    if len(h) < 5000:
+        _note_status("baidu", "unparsed", f"HTML 仅 {len(h)} 字符（疑似限流/空页）")
+        return []
     blocks = re.findall(r'<div[^>]*class="result[^"]*c-container[^"]*"[^>]*>(.*?)</div>\s*</div>', h, re.S)
-    out = []
-    for b in blocks[:6]:
-        txt = _strip_tags(b)
-        if txt and len(txt) > 30:
-            out.append({"title": txt[:90], "url": "", "text": txt[:400]})
+    out = _pack_blocks(blocks)
+    _note_status("baidu", "ok" if out else "unparsed",
+                 "" if out else f"HTML {len(h)} 字符但命中 0 个 result 块")
     return out
 
 
 def _back_cmd(query, timeout):
+    """自定义检索后端（插件口）：`MJC_KNOWLEDGE_CMD="<命令模板，含 {query}>"`。
+
+    v0.11.0 起这是**推荐的证据来源**：三个抓取型后端已实测不可用（sogou 403 / baidu 反爬 /
+    bing 召回差），境外端点（ddg-lite/startpage）本机不可达。接一个正规搜索 API 只需：
+        export MJC_KNOWLEDGE_CMD='curl -s "https://<api>/search?q={query}&key=$KEY"'
+    约定：stdout 输出 JSON —— {"snippets":[{"title","url","text"},...]} 或直接数组；
+    非 JSON 时整段纯文本当作单条片段。
+    状态：未配置 → 不记状态（不算故障）；配置了但失败/无输出 → error/unparsed（可见）。
+    """
     tpl = os.environ.get("MJC_KNOWLEDGE_CMD", "").strip()
     if not tpl:
         return []
     cmd = tpl.replace("{query}", query)
-    p = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=timeout + 5)
+    try:
+        p = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=timeout + 5)
+    except Exception as e:  # noqa
+        _note_status("cmd", "error", f"{type(e).__name__}: {str(e)[:120]}")
+        return []
     try:
         d = json.loads(p.stdout)
         if isinstance(d, dict):
             d = d.get("snippets") or []
-        return [{"title": str(s.get("title", ""))[:90], "url": str(s.get("url", "")),
-                 "text": str(s.get("text", ""))[:400]} for s in d[:6]]
+        out = [{"title": str(s.get("title", ""))[:90], "url": str(s.get("url", "")),
+                "text": str(s.get("text", ""))[:400]} for s in d[:6]]
+        _note_status("cmd", "ok" if out else "unparsed",
+                     "" if out else "命令成功但返回 0 条片段")
+        return out
     except Exception:
         txt = (p.stdout or "").strip()
-        return [{"title": "", "url": "", "text": txt[:400]}] if txt else []
+        if txt:
+            _note_status("cmd", "ok", "非 JSON 输出，按纯文本片段处理")
+            return [{"title": "", "url": "", "text": txt[:400]}]
+        _note_status("cmd", "error",
+                     f"命令无有效输出 (exit={p.returncode}) {(p.stderr or '').strip()[:80]}")
+        return []
 
 
 BACKENDS = {"sogou": _back_sogou, "bing": _back_bing, "baidu": _back_baidu, "cmd": _back_cmd}
@@ -225,7 +315,8 @@ def _merge_try_backend(name, fn, query, timeout):
     try:
         _LAST_CALL[name] = time.time()
         return list(fn(query, timeout) or []), True
-    except Exception:
+    except Exception as e:  # noqa
+        _note_exception(name, e)
         return [], False
 
 
@@ -276,7 +367,8 @@ def _search_merge_parallel(query, names, timeout, min_total, retry_empty):
     if not merged:
         return None
     return {"backend": "+".join(contrib or names), "query": query, "snippets": merged,
-            "fetched": len(merged), "backends_tried": list(names)}
+            "fetched": len(merged), "backends_tried": list(names),
+            "backend_status": {n: dict(BACKEND_STATUS.get(n) or {}) for n in names}}
 
 
 def _search_merge(query, backends, timeout, min_total, max_backends, retry_empty=True,
@@ -322,7 +414,8 @@ def _search_merge(query, backends, timeout, min_total, max_backends, retry_empty
     if not merged:
         return None
     return {"backend": "+".join(contrib or tried), "query": query, "snippets": merged,
-            "fetched": len(merged), "backends_tried": tried}
+            "fetched": len(merged), "backends_tried": tried,
+            "backend_status": {n: dict(BACKEND_STATUS.get(n) or {}) for n in tried}}
 
 
 def search(query, backends=None, timeout=None, merge=False,
