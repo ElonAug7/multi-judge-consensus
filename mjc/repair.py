@@ -519,6 +519,45 @@ def _producer_specs(specs=None):
     return list(DEFAULT_SPECS)
 
 
+def _adopt_on_evidence(task, prev, ok):
+    """v0.11.0i：生产者**未达成共识**时，若某版的"值替换"被安全链独立放行
+    （知识证据门或重采样门 supported），则采纳该版。
+
+    动机（C9d 实测）：证据已成功注入，生产者 A 提出「成立于2009年」，B 仍坚持 1997 →
+    值级共识 no-consensus → 保留原文。而"双生产者一致"这道要求本就是用来防**单模型幻觉**的，
+    现在外部可核验证据已经充当了这道防线（≥min_snippets 条独立片段含新值且不含旧值），
+    再要求两个模型碰巧一致，等于让证据永远无法落地——这正是 C1–C9b 十轮 0 增益的机制根源。
+
+    安全边界（缺一不可）：确有值变化、净替换（非增非删）、非清空式、且 evidence/resample
+    verdict == supported。默认关（settings.repair.evidence_gate.adopt_without_consensus）。
+    """
+    try:
+        from mjc import settings as _settings
+        cfg = ((_settings.load().get("repair") or {}).get("evidence_gate") or {})
+    except Exception:
+        return None
+    if not cfg.get("adopt_without_consensus"):
+        return None
+    o = _values(prev)
+    for c in ok:
+        text = c.get("text") or ""
+        v = _values(text)
+        if v == o or _too_gutted(prev, text):
+            continue
+        if _value_op_block(o, v):
+            continue
+        ok2, why, extra = _safety_checks(task, prev, text)
+        ev = (extra.get("evidence") or {}).get("verdict")
+        rs = (extra.get("resample") or {}).get("verdict")
+        if ok2 and (ev == "supported" or rs == "supported"):
+            out = {"mode": "agreed", "applied": text,
+                   "agreement": "evidence-backed-no-consensus",
+                   "note": f"生产者未共识，但该值替换由外部证据放行（evidence={ev} · resample={rs}）"}
+            out.update(extra)
+            return out
+    return None
+
+
 def dual_revise(task, prev, feedback, specs=None, timeout=120):
     """返回共识结果 dict（不抛出；基础设施错误 → mode=error）。
     v0.10 P2：证据门开时先检索证据并注入生产者提示词（RARR），让修复有据可依。
@@ -567,6 +606,11 @@ def dual_revise(task, prev, feedback, specs=None, timeout=120):
                 result["agreement"] = why
                 result["note"] = _block_note(why)
         else:
+            # v0.11.0i：未共识时，允许"单版提案 + 外部证据放行"（默认关，见 _adopt_on_evidence）
+            alt = None if agreed else _adopt_on_evidence(task, prev, ok)
+            if alt is not None:
+                result.update(alt)
+                return result
             result["mode"] = "disagreed"
             if agreed:
                 result["note"] = "共识版本过短（清空式）→ 保守保留原文"

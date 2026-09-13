@@ -339,6 +339,41 @@ def test_wait_for_window():
     print("  ✅ 证据窗口等待：被封时重试到窗口打开；超时/未开启则单次返回（保守不变）")
 
 
+def test_adopt_on_evidence_without_consensus():
+    """v0.11.0i：生产者未共识，但单版的值替换被外部证据放行 → 采纳（默认关）。
+    依据 C9d 实测：证据已注入，A 提出 2009、B 仍 1997 → no-consensus → 保留原文；
+    而共识要求本是为防单模型幻觉，外部证据已充当该防线。"""
+    # 未共识：A 改 2009，B 保持原值
+    _, restore = _ctx({"deepseek-v4-flash": CAND_A, "glm-4-plus": ORIG})
+    try:
+        # 开关关（默认）→ 仍然保留原文
+        rs = _mock_settings({"evidence_gate": {"enabled": True, "min_snippets": 2}})
+        _, rf = _mock_fetch({"backend": "mock", "snippets": SNIP_2OK})
+        r = repair.dual_revise(TASK, ORIG, "fb")
+        assert r["mode"] == "disagreed" and r["applied"] == ORIG, r
+        rf(); rs()
+
+        # 开关开 + 证据 supported → 采纳（且带取证标记）
+        rs = _mock_settings({"evidence_gate": {"enabled": True, "min_snippets": 2,
+                                               "adopt_without_consensus": True}})
+        _, rf = _mock_fetch({"backend": "mock", "snippets": SNIP_2OK})
+        r2 = repair.dual_revise(TASK, ORIG, "fb")
+        assert r2["mode"] == "agreed" and "2009" in r2["applied"], r2
+        assert r2.get("agreement") == "evidence-backed-no-consensus", r2
+        rf(); rs()
+
+        # 开关开但证据不足 → 仍保守保留原文（不能因噎废食，也不能放水）
+        rs = _mock_settings({"evidence_gate": {"enabled": True, "min_snippets": 2,
+                                               "adopt_without_consensus": True}})
+        _, rf = _mock_fetch({"backend": "mock", "snippets": [SNIP_2OK[2]]})  # 无支持片段
+        r3 = repair.dual_revise(TASK, ORIG, "fb")
+        assert r3["mode"] == "disagreed" and r3["applied"] == ORIG, r3
+        rf(); rs()
+    finally:
+        restore()
+    print("  ✅ 未共识但证据放行 → 采纳；开关关或证据不足 → 仍保留原文")
+
+
 def main():
     print("== 知识证据门 v1 离线测试（零 API/零网络）==")
     test_gate_supports_apply()
@@ -356,6 +391,7 @@ def main():
     test_evidence_precedence_clause()
     test_all_backends_retrieval()
     test_wait_for_window()
+    test_adopt_on_evidence_without_consensus()
     print("== 知识证据门全部通过 ✅ ==")
 
 
