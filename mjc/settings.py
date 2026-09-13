@@ -106,6 +106,9 @@ DEFAULT = {
                 "screen_conf": None, "degrade": None, "cache": None},
     "limits": {"gate": 1, "auto": 1, "scan": 1},
     "falsifier": {"enabled": True, "model": "", "min_len": 40},
+    "consensus": {"dissent_guard": {"enabled": True,
+                                     "blocking_types": ["factual_error", "hallucination", "logical_error"],
+                                     "min_conf": 0.0}},
     "key_status": {},
 }
 

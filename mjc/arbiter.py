@@ -16,6 +16,55 @@ import time
 import datetime
 
 
+# P1 异议保护（dissent guard，v0.10 无幻觉引擎）：
+#   这些 issue 类型属"阻塞性异议"——即便多数票 pass，也不得直接放行。
+#   修因：csqa-07 实测 votes={pass:2,revise:1} → pass，其中 glm-flash 标了 factual_error
+#   却投 pass，glm-plus 标 factual_error 投 revise——纯票型裁决把异议票压掉了。
+BLOCKING_ISSUE_TYPES = ("factual_error", "hallucination", "logical_error")
+
+
+def dissent_config(data=None):
+    """读取 settings.consensus.dissent_guard（**默认启用**）。
+    返回 {enabled, types, min_conf}；读不到配置时走内置默认（宁严勿漏）。"""
+    try:
+        from mjc import settings as _settings
+        cfg = ((_settings.load(data).get("consensus") or {}).get("dissent_guard") or {})
+    except Exception:
+        cfg = {}
+    enabled = cfg.get("enabled", True)
+    types = cfg.get("blocking_types") or list(BLOCKING_ISSUE_TYPES)
+    try:
+        min_conf = float(cfg.get("min_conf", 0.0))
+    except (TypeError, ValueError):
+        min_conf = 0.0
+    return {"enabled": bool(enabled), "types": tuple(types), "min_conf": min_conf}
+
+
+def detect_blocking_dissent(opinions, guard):
+    """扫描各裁定：命中阻塞性 issue 类型（事实/幻觉/逻辑错）→ 返回异议摘要列表。
+    只看 issue 类型，**不看该裁判自己的 verdict**（自相矛盾也要拦）。"""
+    if not (guard and guard.get("enabled")):
+        return []
+    types = set(guard.get("types") or BLOCKING_ISSUE_TYPES)
+    min_conf = float(guard.get("min_conf") or 0.0)
+    hits = []
+    for o in opinions or []:
+        if not isinstance(o, dict):
+            continue
+        try:
+            conf = float(o.get("confidence"))
+        except (TypeError, ValueError):
+            conf = 0.0
+        if conf < min_conf:
+            continue
+        bad = sorted({i.get("type") for i in (o.get("issues") or [])
+                      if isinstance(i, dict) and i.get("type") in types})
+        if bad:
+            hits.append({"judge": o.get("judge_id"), "verdict": o.get("verdict"),
+                         "confidence": o.get("confidence"), "types": bad})
+    return hits
+
+
 def append_debate_log(record, log_dir):
     """辩论发生时（debate_rounds>0）把完整记录（含每轮意见）追加到 log_dir/debate-*.jsonl"""
     if not (log_dir and record.get("debate_rounds")):
@@ -67,13 +116,16 @@ class Arbiter:
         self.max_debate_rounds = max_debate_rounds
         self.min_pass = min_pass    # 通过所需票数
         self.debate_log_dir = debate_log_dir  # 非空 → 辩论记录自动落盘 logs/debate-*.jsonl（P2.3）
+        self.dissent_guard = dissent_config()  # P1 异议保护配置
         self.log = []               # 完整辩论记录（仲裁日志）
 
     @staticmethod
-    def decide(verdicts, min_pass=2):
+    def decide(verdicts, min_pass=2, opinions=None, guard=None):
         # error 票：Judge 调用失败/解析失败时的降级产物（verdict='error'，见 parallel_review 异常分支），
         # 不参与任何票型计数——池退化由多数票兜底；全 error 时 final=need_human（无票可达 min_pass）。
-        """纯票型裁决（单轮基线 & 辩论后最终裁决共用同一规则）"""
+        """票型裁决（单轮基线 & 辩论后最终裁决共用同一规则）。
+        P1 异议保护：若任一裁定标了 factual_error/hallucination/logical_error，
+        则多数 pass **不得直接放行** → 降级为 revise（交给修复链 + 证据核验）。"""
         from collections import Counter
         c = Counter(verdicts)
         n = len(verdicts)
@@ -81,6 +133,8 @@ class Arbiter:
         reject_votes = c.get("reject", 0)
         revise_votes = c.get("revise", 0)
         if pass_votes >= min_pass:
+            if detect_blocking_dissent(opinions, guard):
+                return "revise"
             return "pass"
         if reject_votes >= min_pass:
             return "reject"
@@ -134,7 +188,7 @@ class Arbiter:
                 except Exception:
                     pass
         verdicts = [o.get("verdict", "error") for o in r1]
-        round1_decision = self.decide(verdicts, self.min_pass)  # 单轮基线（P2.5 对比用）
+        round1_decision = self.decide(verdicts, self.min_pass, r1, self.dissent_guard)  # 单轮基线（P2.5 对比用）
         round_opinions[1] = r1
         rounds.append({"round": 1, "kind": "independent", "opinions": r1})
 
@@ -168,7 +222,8 @@ class Arbiter:
         pass_votes = c.get("pass", 0)
         reject_votes = c.get("reject", 0)
         revise_votes = c.get("revise", 0)
-        final = self.decide(verdicts, self.min_pass)
+        dissent_hits = detect_blocking_dissent(r1, self.dissent_guard)
+        final = self.decide(verdicts, self.min_pass, r1, self.dissent_guard)
 
         elapsed = time.time() - start
         record = {
@@ -183,6 +238,8 @@ class Arbiter:
             "revise_votes": revise_votes,
             "debate_rounds": debate_round,
             "elapsed_s": round(elapsed, 1),
+            "dissent": {"enabled": bool(self.dissent_guard.get("enabled")),
+                        "triggered": bool(dissent_hits), "hits": dissent_hits},
             "rounds": rounds,
         }
         self.log.append(record)
@@ -226,7 +283,7 @@ class ParallelArbiter(Arbiter):
 
         r1 = parallel_review(self.pool, user_task, agent_output, emit=getattr(self, 'emit', None), round_no=1)
         verdicts = [o.get("verdict", "error") for o in r1]
-        round1_decision = self.decide(verdicts, self.min_pass)  # 单轮基线（P2.5 对比用）
+        round1_decision = self.decide(verdicts, self.min_pass, r1, self.dissent_guard)  # 单轮基线（P2.5 对比用）
         rounds.append({"round": 1, "kind": "independent", "opinions": r1})
 
         debate_round = 0
@@ -243,7 +300,8 @@ class ParallelArbiter(Arbiter):
 
         from collections import Counter
         c = Counter(verdicts)
-        final = self.decide(verdicts, self.min_pass)
+        dissent_hits = detect_blocking_dissent(r1, self.dissent_guard)
+        final = self.decide(verdicts, self.min_pass, r1, self.dissent_guard)
         record = {
             "ts": datetime.datetime.now().isoformat(timespec="seconds"),
             "user_task": user_task[:500],
@@ -256,6 +314,8 @@ class ParallelArbiter(Arbiter):
             "revise_votes": c.get("revise", 0),
             "debate_rounds": debate_round,
             "elapsed_s": round(time.time() - start, 1),
+            "dissent": {"enabled": bool(self.dissent_guard.get("enabled")),
+                        "triggered": bool(dissent_hits), "hits": dissent_hits},
             "rounds": rounds,
         }
         self.log.append(record)
