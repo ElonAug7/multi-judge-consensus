@@ -19,7 +19,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from mjc import knowledge, providers, repair
+from mjc import knowledge, providers, repair, settings
 
 TASK = "请用一句话以内回答下面的问题：\n香港平安钟协会最早成立于哪一年？"
 OLD, NEW = {"1997"}, {"2009"}
@@ -119,6 +119,19 @@ def run():
         check("producer_errors 结构化记录", bool(r3.get("producer_errors")))
     finally:
         providers.chat, providers.has_key = old_chat, old_has
+
+    # ---- 6) 生产者对可配置（v0.11.0d：默认对同时下线时不改代码即可换替代对）----
+    old_load2 = settings.load
+    try:
+        settings.load = lambda: {"repair": {"producers": ["glm:glm-4-flash", "dashscope:qwen-max"]}}
+        got = repair._producer_specs()
+        check("settings.repair.producers 生效", got == ["glm:glm-4-flash", "dashscope:qwen-max"])
+        check("显式入参优先于配置",
+              repair._producer_specs(["a:x"]) == ["a:x"])
+        settings.load = lambda: {}
+        check("无配置时回落 DEFAULT_SPECS", repair._producer_specs() == list(repair.DEFAULT_SPECS))
+    finally:
+        settings.load = old_load2
 
     print("== 证据独立性（v0.11.0）全部通过 ✅ ==" if ok else "== ❌ 有失败 ==")
     return 0 if ok else 1

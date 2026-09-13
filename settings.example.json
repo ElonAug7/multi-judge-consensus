@@ -179,7 +179,12 @@
    "enabled": false,
    "max_snippets": 6,
    "note": "检索增强修订 v0.10 P2（RARR）：先把检索证据注入生产者提示词，让修复有据可依；默认关（opt-in）"
-  }
+  },
+  "producers": [
+   "deepseek:deepseek-v4-flash",
+   "glm:glm-4-plus"
+  ],
+  "producers_note": "双生产者对（跨厂共识）。留空/删除则用代码内默认值；2026-09-13 实测默认对同时下线（deepseek 空响应 + glm-4-plus 欠费）时可用此项换替代对，无需改代码。"
  },
  "limits": {
   "gate": 1,

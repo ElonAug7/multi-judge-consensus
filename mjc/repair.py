@@ -444,10 +444,32 @@ def _evidence_rules(snips):
     return "\n".join(lines)
 
 
+def _producer_specs(specs=None):
+    """双生产者对：显式入参 > settings.repair.producers > DEFAULT_SPECS（v0.11.0d）。
+
+    动机：实测 2026-09-13 deepseek 空响应 + glm-4-plus 欠费 429 同时下线，修复端必然空转，
+    而默认对硬编码在代码里 → 换替代对必须改代码。现改为可配置，实验可在配置快照里钉住
+    （配合 MJC_SETTINGS_PATH），且不影响"默认跨厂"的设计意图。
+    """
+    if specs:
+        return [str(s) for s in specs]
+    try:
+        from mjc import settings as _settings
+        cfg = (_settings.load().get("repair") or {}).get("producers")
+        if isinstance(cfg, list) and cfg:
+            out = [str(x).strip() for x in cfg if str(x).strip()]
+            if out:
+                return out
+    except Exception:
+        pass
+    return list(DEFAULT_SPECS)
+
+
 def dual_revise(task, prev, feedback, specs=None, timeout=120):
     """返回共识结果 dict（不抛出；基础设施错误 → mode=error）。
-    v0.10 P2：证据门开时先检索证据并注入生产者提示词（RARR），让修复有据可依。"""
-    specs = available_producers(specs)
+    v0.10 P2：证据门开时先检索证据并注入生产者提示词（RARR），让修复有据可依。
+    v0.11.0d：生产者对可由 settings.repair.producers 配置（默认仍是跨厂 DEFAULT_SPECS）。"""
+    specs = available_producers(_producer_specs(specs))
     if len(specs) < 2:
         return {"mode": "error", "applied": prev, "revs": [], "tokens": 0,
                 "note": "可用生产者不足 2 个（跨厂）"}
