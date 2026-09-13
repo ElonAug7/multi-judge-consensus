@@ -287,16 +287,74 @@ def available_producers(specs=None):
     return out
 
 
+def _evidence_revise_cfg():
+    """v0.10 P2：检索增强修订（RARR 式）配置。
+    默认关（opt-in）——需显式 settings.repair.evidence_revise.enabled=true。
+    返回 (enabled, max_snippets)。"""
+    try:
+        from mjc import settings as _settings
+        rep = (_settings.load().get("repair") or {})
+    except Exception:
+        rep = {}
+    cfg = rep.get("evidence_revise") or {}
+    enabled = cfg.get("enabled", False)  # 默认关（opt-in）；C 臂在 settings 显式打开
+    try:
+        max_snip = int(cfg.get("max_snippets", 6))
+    except (TypeError, ValueError):
+        max_snip = 6
+    return bool(enabled), max(1, min(max_snip, 12))
+
+
+def _fetch_revise_evidence(task, prev, max_snippets=6):
+    """给修订者先取证：query = 任务(≤80字) + 原文数值；返回片段文本列表（失败 → []）。"""
+    try:
+        from mjc import knowledge
+    except Exception:
+        return []
+    q = (task or "").strip()[:80]
+    vals = sorted(_values(prev))
+    if vals:
+        q = (q + " " + " ".join(vals)).strip()
+    if not q:
+        return []
+    try:
+        res = knowledge.fetch_evidence(q, merge=True, min_total=3, max_backends=3)
+    except Exception:
+        return []
+    snips = (res or {}).get("snippets") or []
+    out = []
+    for s in snips[:max_snippets]:
+        t = (s.get("text") or s.get("title") or "").strip()
+        if t:
+            out.append(t[:300])
+    return out
+
+
+def _evidence_rules(snips):
+    """把检索片段转成追加守则（仅供核验；相关才用）。"""
+    if not snips:
+        return ""
+    lines = ["【外部检索证据】（公开检索，可能不相关/过时；仅在直接相关时用于核验）"]
+    for i, t in enumerate(snips, 1):
+        lines.append(f"{i}. {t}")
+    lines.append("若证据明确给出正确值，可采用；若与本题无关或不足，忽略之；不得据此引入其它新事实。")
+    return "\n".join(lines)
+
+
 def dual_revise(task, prev, feedback, specs=None, timeout=120):
-    """返回共识结果 dict（不抛出；基础设施错误 → mode=error）。"""
+    """返回共识结果 dict（不抛出；基础设施错误 → mode=error）。
+    v0.10 P2：证据门开时先检索证据并注入生产者提示词（RARR），让修复有据可依。"""
     specs = available_producers(specs)
     if len(specs) < 2:
         return {"mode": "error", "applied": prev, "revs": [], "tokens": 0,
                 "note": "可用生产者不足 2 个（跨厂）"}
-    messages = build_messages(task, prev, feedback)
+    ev_on, ev_max = _evidence_revise_cfg()
+    ev_snips = _fetch_revise_evidence(task, prev, ev_max) if ev_on else []
+    messages = build_messages(task, prev, feedback, extra_rules=_evidence_rules(ev_snips))
     revs = [_call_one(s, messages, timeout=timeout) for s in specs]
     ok = [r for r in revs if r.get("text")]
-    result = {"mode": "incomplete", "applied": prev, "revs": revs, "tokens": 0}
+    result = {"mode": "incomplete", "applied": prev, "revs": revs, "tokens": 0,
+              "evidence_revise": {"enabled": ev_on, "snippets": len(ev_snips)}}
     if len(ok) < 2:
         result["note"] = "有效修订不足 2 路，保守保留原文"
         return result
