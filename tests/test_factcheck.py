@@ -13,8 +13,12 @@ MJC · factcheck 事实仲裁离线测试（零 API，mock providers.chat）
 """
 import os
 import sys
+import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+# 测试隔离：节省账本写临时文件，避免污染真账本（logs/savings.jsonl）
+os.environ.setdefault("MJC_SAVINGS_PATH", tempfile.mktemp(suffix="-savings.jsonl"))
 
 from mjc import factcheck, providers
 

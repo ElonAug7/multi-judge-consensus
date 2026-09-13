@@ -109,6 +109,20 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, {"events": evs, "last": last})
             except Exception as e:
                 self._send(500, {"error": f"live 失败: {e}"})
+        elif self.path.startswith("/api/savings"):
+            if not _authed(self.headers, self.path):
+                self._send(401, {"error": "unauthorized"})
+                return
+            try:
+                from mjc import savings
+                q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+                try:
+                    days = max(1, min(365, int((q.get("days") or ["30"])[0])))
+                except (TypeError, ValueError):
+                    days = 30
+                self._send(200, savings.summary(days=days))
+            except Exception as e:
+                self._send(500, {"error": f"savings 失败: {e}"})
         elif self.path.startswith("/api/health"):
             if not _authed(self.headers, self.path):
                 self._send(401, {"error": "unauthorized"})

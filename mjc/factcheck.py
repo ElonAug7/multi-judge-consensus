@@ -204,16 +204,33 @@ def _batch_arbitrate(picked, judges, task, content, kb_budget, timeout):
         issues="\n".join(lines), evidence_section=("\n".join(ev_blocks) if ev_blocks else "（无外部证据）"))
     per_issue = {i: [] for i in range(1, len(picked) + 1)}
     calls = 0
-    for j in judges:
+
+    def _ask(j):
+        """单个仲裁员一次调用（并行单元）→ (judge, entries, err)"""
         try:
             raw = providers.chat(j.provider, [{"role": "user", "content": prompt}],
                                  model=j.model, temperature=0.1, max_tokens=6000, timeout=timeout)
-            calls += 1
-            entries = _as_list(_extract_any(raw))
+            return j, _as_list(_extract_any(raw)), None
         except Exception as e:  # noqa
-            calls += 1
-            entries = []
-            per_issue.setdefault(0, []).append({"judge": j.name, "error": str(e)[:120]})
+            return j, [], str(e)[:120]
+
+    # v0.11.0l：仲裁员之间**互相独立**（同一提示词、无共享状态）→ 并行发起，省一半墙钟时间。
+    # 默认并行；settings.factcheck.serial=true 可退回串行（便于排查限流类问题）。
+    try:
+        from mjc import settings as _st
+        serial = bool((_st.load().get("factcheck") or {}).get("serial", False))
+    except Exception:
+        serial = False
+    if serial or len(judges) < 2:
+        results = [_ask(j) for j in judges]
+    else:
+        import concurrent.futures as _cf
+        with _cf.ThreadPoolExecutor(max_workers=len(judges)) as _ex:
+            results = list(_ex.map(_ask, judges))
+    for j, entries, err in results:
+        calls += 1
+        if err:
+            per_issue.setdefault(0, []).append({"judge": j.name, "error": err})
         for e in entries:
             if not isinstance(e, dict):
                 continue
@@ -235,6 +252,14 @@ def _batch_arbitrate(picked, judges, task, content, kb_budget, timeout):
                       "desc": (it.get("desc") or "")[:200], "sug": (it.get("sug") or "")[:150],
                       "outcome": _decide(votes) if votes else "unknown", "votes": votes,
                       "evidence": ({"backend": ev.get("backend"), "n": len(ev.get("snippets") or [])} if ev else None)})
+    avoided = max(0, len(picked) * len(judges) - len(judges))
+    if avoided:
+        try:
+            from mjc import savings as _sav
+            _sav.record("batch_arbitration", calls=avoided,
+                        note=f"{len(picked)} 条意见 × {len(judges)} 名仲裁员 → 批量 {len(judges)} 次")
+        except Exception:
+            pass
     return items, calls
 
 

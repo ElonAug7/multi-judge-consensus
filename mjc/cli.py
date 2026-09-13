@@ -420,6 +420,17 @@ def cmd_evidence_gate(args):
     return 0 if r.get("verdict") == "supported" else 2
 
 
+def cmd_savings(args):
+    """节省账本（v0.11.0l）：省了多少 token / 钱 / 时间（相对不打折的全量审查）。"""
+    from mjc import savings
+    sm = savings.summary(days=args.days)
+    if args.json:
+        print(json.dumps(sm, ensure_ascii=False, indent=1))
+        return 0
+    print(savings.format_summary(sm))
+    return 0
+
+
 def cmd_knowledge_probe(args):
     """检索后端探活（v0.11.0）：逐个后端实打一次，报 status（ok/blocked/unparsed/empty/error）。
     退出码：至少一个后端 ok=0 / 全部不可用=2。抓取型后端会被反爬拦截——本命令让这件事可见。"""
@@ -551,6 +562,11 @@ def main():
     p_eg.add_argument("--new", required=True, help="新值集合（逗号/空格分隔）")
     p_eg.add_argument("--min-snippets", type=int, default=2, help="放行所需支持片段数（默认 2）")
     p_eg.set_defaults(fn=cmd_evidence_gate)
+
+    p_sv = sub.add_parser("savings", help="节省账本 v0.11.0l：省了多少 token / 钱 / 时间")
+    p_sv.add_argument("--days", type=int, default=30, help="统计窗口（默认 30 天）")
+    p_sv.add_argument("--json", action="store_true", help="输出 JSON（供程序消费）")
+    p_sv.set_defaults(fn=cmd_savings)
 
     p_kp = sub.add_parser("knowledge-probe",
                           help="检索后端探活 v0.11.0：逐个实打，区分「被反爬拦截」与「真无结果」")

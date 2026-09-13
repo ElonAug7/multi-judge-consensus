@@ -118,6 +118,19 @@ def _calls_of(record):
     return sum(len(r.get("opinions") or []) for r in (record.get("rounds") or []))
 
 
+def _note_saving(mechanism, calls, rec=None, note="", seconds=None):
+    """把一次"未发生的调用"记进节省账本（v0.11.0l）。任何异常都吞掉——记账绝不阻塞审查。"""
+    try:
+        from mjc import savings as _sav
+        tokens = (rec or {}).get("tokens")
+        cost = (rec or {}).get("cost_yuan")
+        _sav.record(mechanism, calls=calls, tokens=tokens, cost=cost,
+                    seconds=seconds, note=note,
+                    estimated=(tokens is None) if rec is not None else True)
+    except Exception:
+        pass
+
+
 def _committee(task, output, pool, mode, use_cache, log_path, debate_log_dir,
                key_extra=None, emit=None, max_debate_rounds=None):
     """委员会仲裁（带缓存）：返回 (record, cache_hit, calls)"""
@@ -127,6 +140,7 @@ def _committee(task, output, pool, mode, use_cache, log_path, debate_log_dir,
     if use_cache:
         hit = cache.get(key)
         if hit:
+            _note_saving("cache_hit", len(pool), hit, "委员会缓存命中（零调用复用）")
             return hit, True, 0
     arb = ParallelArbiter(pool, debate_log_dir=debate_log_dir, emit=emit,
                          max_debate_rounds=max_debate_rounds if max_debate_rounds is not None else 2)
@@ -277,6 +291,7 @@ def run_review_once(task, output, pool, screen_judge=None, screen_conf=None,
                     stats["cache_hit"] = True
                     stats["screened"] = True
                     stats["screen_passed"] = True
+                    _note_saving("cache_hit", len(pool), None, "初筛结果整条缓存命中（零调用放行）")
                     return _ret(rec, stats)
                 # 上次初筛未放行（结果已缓存）→ 免初筛调用，直接落入委员会
         if cached_op is not None:
@@ -309,6 +324,7 @@ def run_review_once(task, output, pool, screen_judge=None, screen_conf=None,
             stats["screened"] = True
         if op.get("verdict") == "pass" and float(op.get("confidence") or 0) >= screen_conf:
             stats["screen_passed"] = True
+            _note_saving("screen_pass", len(pool), None, "初筛 pass+高置信 → 跳过委员会")
             rec = _mk_screen_record(task, output, op, start, screen_conf)
             if use_cache:
                 cache.put(key, {"_screen_pass": True, "screen_opinion": op})

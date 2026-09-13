@@ -31,7 +31,8 @@ jobs:
                    test_repair test_switch test_falsifier test_resample \
                    test_evidence_gate test_evidence_merge test_evidence_independence \
                    test_backend_health test_dissent_guard test_evidence_revise test_ipv4_pref \
-                   test_parallel_search test_hallucination test_provider_reasoning; do
+                   test_parallel_search test_hallucination test_provider_reasoning \
+                   test_savings; do
             echo "== $t =="
             python3 tests/$t.py
           done

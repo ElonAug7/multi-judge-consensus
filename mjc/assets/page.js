@@ -140,7 +140,7 @@ async function loadState(){
   $('tier-note').textContent='当前档位：'+(cur.tier_label||'');
   $('screen').checked=!!(cur.screen_enabled&&cur.screen_model);
   $('degrade').checked=!!cur.degrade;$('nocache').checked=!cur.cache;
-  renderTiers(cur);renderKeys();renderModels(cur);renderStatus(cur);renderSwitch();
+  renderTiers(cur);renderKeys();renderModels(cur);renderStatus(cur);renderSwitch();renderSavings();
 }
 function renderTiers(cur){
   $('tiers').innerHTML='';
@@ -227,6 +227,25 @@ function renderStatus(){
   countUp($('st-num-tokens'),u.tokens||0);
   countUp($('st-num-cost'),u.cost_yuan||0,900,true);
   countUp($('st-num-nonpass'),u.nonpass||0);
+}
+/* ---- 节省账本（v0.11.0l） ---- */
+async function renderSavings(){
+  const box=$('sv-detail'); if(!box) return;
+  let d;
+  try{ d=await api('/api/savings?days=30'); }
+  catch(e){ box.textContent='（读取失败：'+e.message+'）'; return; }
+  const t=(d&&d.totals)||{};
+  countUp($('sv-tokens'),t.tokens||0);
+  countUp($('sv-cost'),t.cost_yuan||0,900,true);
+  countUp($('sv-min'),Math.round((t.seconds||0)/60));
+  countUp($('sv-calls'),t.calls||0);
+  const names={cache_hit:'缓存命中',screen_pass:'初筛放行',batch_arbitration:'批量仲裁',dedupe:'重复送审去重',parallel:'并行省时'};
+  const by=(d&&d.by_mechanism)||{};
+  const rows=Object.keys(by).sort((a,b)=>(by[b].tokens||0)-(by[a].tokens||0))
+    .map(k=>`<span class="badge">${esc(names[k]||k)} · ${(by[k].tokens||0).toLocaleString()} tk · ¥${by[k].cost_yuan||0}</span>`);
+  box.innerHTML=rows.length?rows.join(' '):'（还没有记录——触发一次审查即可累积）';
+  const est=Math.round(((d&&d.estimated_share)||0)*100);
+  $('sv-note').textContent=`近 ${(d&&d.days)||30} 天 · 共 ${t.n||0} 笔 · 其中 ${est}% 为估算值（其余取自实测用量）`;
 }
 /* ---- 自动审查总开关 ---- */
 let _swBusy=false;
