@@ -159,9 +159,10 @@ excluded on purpose: those belong to the test suite, not to MJC.
   the 4 decoys was reported.
 - **The single-model arm did not produce usable output.** Its response hit the output-token ceiling, leaving the
   JSON array unterminated and unparseable; from item 11 onward it also fell into a repetition loop — roughly
-  104 of the 114 recoverable objects restate the same complaint (~28x duplication).
+  only 22 of the 114 recoverable objects are distinct — the remaining 92 restate an existing
+  complaint (the most frequent one appears 13 times, so the 114 objects are 5.2x the distinct content).
 - **Recall by category** (MJC / single model): doc-vs-impl 2/4 vs 1/4, numeric 2/4 vs 2/4, logic 2/4 vs 1/4.
-- **Cost per defect found**: 0.049 for MJC vs ~0.054 for the single-model arm (which was unusable).
+- **Cost per defect found**: 0.049 for MJC vs ~0.053 for the single-model arm (which was unusable).
   59,678 tokens in total (51,545 prompt / 8,133 completion).
 - **Where MJC is weak (stated plainly):** the 6 misses all lack a direct textual contradiction — they require
   business-semantics reasoning (tax computed on the pre-discount subtotal, a refund path that can exceed the
