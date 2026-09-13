@@ -248,6 +248,42 @@ def test_evidence_query_build():
     print("  ✅ 查询构建：只含问题句 + ≤80 字截断（新旧值均不进入查询）")
 
 
+def test_all_backends_retrieval():
+    """v0.11.0c：证据门默认问遍所有健康后端——旧行为按 min_total=3 早停，实测 bing 的通用
+    「香港」页会凑满 3 条把检索截断，真正有证据的后端从未被问。"""
+    seen = []
+    old_fetch = knowledge.fetch_evidence
+    try:
+        def fake(query, *a, **k):
+            seen.append(dict(k))
+            return {"backend": "mock", "snippets": []}
+        knowledge.fetch_evidence = fake
+        repair.evidence_check("题目", {"1997"}, {"2009"}, min_snippets=2)
+        check_all = seen[-1].get("min_total") == 999 and seen[-1].get("max_backends", 0) >= 4
+        repair.evidence_check("题目", {"1997"}, {"2009"}, min_snippets=2, all_backends=False)
+        check_early = "min_total" not in seen[-1]
+        assert check_all, seen
+        assert check_early, seen
+    finally:
+        knowledge.fetch_evidence = old_fetch
+    print("  ✅ 检索广度：默认问遍全部健康后端；all_backends=False 回到早停路径")
+
+
+def test_value_boundary_matching():
+    """v0.11.0c 精度：纯数字值按**数字边界**匹配——'2009' 不得命中版本号 '20200925'。
+    旧实现裸子串匹配，实测 bing 页面含 v=20200925b → 会给出假支持（放行幻觉的通道）。"""
+    assert repair._value_in_text("2009", "协会由 2009 年成立至今")
+    assert not repair._value_in_text("2009", "var v='20200925b'")
+    assert not repair._value_in_text("1997", "订单号 19970")
+    assert repair._value_in_text("2009.5", "增长 2009.5 万")
+    assert not repair._value_in_text("2009", "2009.5")          # 整数不得命中小数
+    assert repair._value_in_text("凝固的爱", "主题曲为《凝固的爱》")  # 非数字值仍走子串
+    assert not repair._snippet_supports("var t='v=20200925b'; .size9{font-size:1em}", {"1997"}, {"2009"})
+    assert repair._snippet_supports("协会由 2009 年成立至今", {"1997"}, {"2009"})
+    assert not repair._snippet_supports("1997 年成立，2009 年注册", {"1997"}, {"2009"})  # 含旧值 → 不算支持
+    print("  ✅ 值匹配精度：数字边界匹配（版本号/CSS 噪音不构成证据支持）")
+
+
 def main():
     print("== 知识证据门 v1 离线测试（零 API/零网络）==")
     test_gate_supports_apply()
@@ -261,6 +297,8 @@ def main():
     test_resample_conflict_not_overridden()
     test_resample_inconclusive_evidence_off_blocks()
     test_evidence_query_build()
+    test_value_boundary_matching()
+    test_all_backends_retrieval()
     print("== 知识证据门全部通过 ✅ ==")
 
 

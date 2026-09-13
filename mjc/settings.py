@@ -21,7 +21,9 @@ import os
 import time
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-PATH = os.path.join(BASE_DIR, "settings.json")
+# v0.11.0c：可用 MJC_SETTINGS_PATH 指向一份**冻结的配置快照**（实验可复现：代码 SHA + 配置一起钉）。
+# 未设置时行为与旧版逐字节一致（读仓库内 settings.json）。
+PATH = os.environ.get("MJC_SETTINGS_PATH") or os.path.join(BASE_DIR, "settings.json")
 KEYS_PATH = os.path.join(BASE_DIR, "keys.local.json")
 
 PROBE_CACHE_TTL = 300   # 秒：探测结果 5 分钟内复用，防手滑连点重复烧调用

@@ -24,6 +24,11 @@ BAIDU_BLOCK = '<html><body>百度安全验证 网络不给力，请稍后重试 
 BING_OK = ('<ol><li class="b_algo"><h2>香港平安鐘協會有限公司</h2>'
            '<p>香港平安鐘協會有限公司由 2009 年成立至今，致力為社會的有需要人士提供支援服務。</p>'
            '</li></ol>')
+SO360_OK = ('<ul><li class="res-list"><style>.x{font-size:.83em}</style>'
+            '<h3>香港平安鐘協會有限公司</h3>'
+            '<p>香港平安鐘協會有限公司由 2009 年成立至今，服務長者。 hongkongssa.com</p></li></ul>')
+SO360_JUNK = ('<ul><li class="res-list"><style>.g-v-feedback{box-shadow:0 4px 16px 0 rgba(0,0,0,.12)}'
+              '</style><script>var t="v=20200925b";</script></li></ul>')
 BLANK_OK = '<html><body>' + ('普通页面内容，没有结果块。' * 20) + '</body></html>'
 
 
@@ -40,6 +45,14 @@ def run():
     check("sogou 反爬页 → 命中指纹", knowledge._detect_block(SOGOU_BLOCK) is not None)
     check("baidu 安全验证页 → 命中指纹", knowledge._detect_block(BAIDU_BLOCK) is not None)
     check("正常结果页 → 不误判", knowledge._detect_block(BING_OK) is None)
+    check("so360 正常结果页 → 不误判", knowledge._detect_block(SO360_OK) is None)
+
+    # ---- 1c) 片段提取必须剥掉 script/style/注释（否则值匹配会命中版本号等噪音）----
+    noisy = knowledge._strip_tags(SO360_JUNK)
+    check("_strip_tags 剥掉 <style> 内容（CSS 不进片段）", "box-shadow" not in noisy and "feedback" not in noisy)
+    check("_strip_tags 剥掉 <script> 内容（JS 不进片段）", "20200925" not in noisy and "var t" not in noisy)
+    keep = knowledge._strip_tags(SO360_OK)
+    check("_strip_tags 保留正文证据文本", "2009" in keep and "hongkongssa.com" in keep)
 
     # ---- 1b) 状态语义边界：401/403/429 = 拒绝服务 → blocked；其它 → error ----
     import urllib.error
@@ -84,6 +97,18 @@ def run():
         check("bing 正常解析 → status=ok 且有片段",
               len(sn) == 1 and knowledge.BACKEND_STATUS["bing"]["status"] == "ok")
         check("解析出的片段含官网证据", "2009" in sn[0]["text"])
+
+        knowledge.BACKEND_STATUS.clear()
+        knowledge._http_get = fake_get(SO360_OK)
+        sn = knowledge._back_so360("q", 5)
+        check("so360 正常解析 → status=ok 且片段无 CSS 噪音",
+              len(sn) == 1 and knowledge.BACKEND_STATUS["so360"]["status"] == "ok"
+              and "box-shadow" not in sn[0]["text"] and "2009" in sn[0]["text"])
+
+        knowledge._http_get = fake_get(SOGOU_BLOCK)
+        sn = knowledge._back_so360("q", 5)
+        check("so360 反爬 → status=blocked 且 0 条",
+              sn == [] and knowledge.BACKEND_STATUS["so360"]["status"] == "blocked")
 
         # ---- 3) merge 结果带 backend_status ----
         knowledge.BACKEND_STATUS.clear()
@@ -131,6 +156,32 @@ def run():
         knowledge.fetch_evidence = nothing
         r3 = repair.evidence_check("题目", {"1997"}, {"2009"}, min_snippets=2)
         check("无任何后端状态且无结果 → insufficient（既有行为不变）", r3["verdict"] == "insufficient")
+
+        # ---- 6) 反爬冷却：不对刚封你的后端立刻重试（实测会加重封禁）----
+        knowledge.BACKEND_STATUS.clear()
+        knowledge._BLOCKED_AT.clear()
+        knowledge._LAST_CALL.clear()
+        calls = {"n": 0}
+
+        def blocked_backend(q, t):
+            calls["n"] += 1
+            knowledge._note_status("_cd", "blocked", "测试用反爬")
+            return []
+
+        knowledge.BACKENDS["_cd"] = blocked_backend
+        try:
+            knowledge.search("q", backends=["_cd"], merge=True, retry_empty=True)
+            check("刚返回 blocked 的后端不被立刻重试（只调用 1 次）", calls["n"] == 1)
+            check("该后端进入反爬冷却", knowledge._in_cooldown("_cd"))
+            calls["n"] = 0
+            knowledge.search("q", backends=["_cd"], merge=True)
+            check("冷却期内直接跳过，不再发起请求", calls["n"] == 0)
+            st = knowledge.backend_health().get("_cd") or {}
+            check("跳过也记 blocked（上层据此判 error 而非『无证据』）", st.get("status") == "blocked")
+        finally:
+            knowledge.BACKENDS.pop("_cd", None)
+            knowledge._BLOCKED_AT.clear()
+            knowledge.BACKEND_STATUS.clear()
 
         # ---- 5) cmd 插件口（接正规搜索 API 的唯一通道）状态可见 ----
         knowledge.BACKEND_STATUS.clear()

@@ -50,6 +50,28 @@ _CACHE = {}          # query -> (ts, result)
 _CACHE_TTL = 24 * 3600
 _LAST_CALL = {}       # backend -> ts（限速）
 _MIN_INTERVAL = 2.0   # 同后端两次请求最小间隔（秒）
+# v0.11.0c：被反爬拦截后的冷却（秒）。实测 so360 被封后 ~180s 恢复；冷却期内直接跳过该后端，
+# 既省延迟也不再加重封禁（旧实现会对刚返回 blocked 的后端**立刻再打一次**）。
+_BLOCK_COOLDOWN = 180.0
+_BLOCKED_AT = {}      # backend -> ts（最近一次被判 blocked 的时刻）
+
+
+def _block_cooldown():
+    """冷却秒数：settings.knowledge.blocked_cooldown（默认 180，实测 so360 恢复时间）。"""
+    try:
+        v = _settings_cfg().get("blocked_cooldown")
+        return max(0.0, float(v)) if v is not None else _BLOCK_COOLDOWN
+    except Exception:
+        return _BLOCK_COOLDOWN
+
+
+def _in_cooldown(name):
+    ts = _BLOCKED_AT.get(name)
+    return bool(ts) and (time.time() - ts) < _block_cooldown()
+
+
+def _mark_blocked(name):
+    _BLOCKED_AT[name] = time.time()
 
 BACKEND_STATUS = {}   # backend -> {"status","note","at"}（v0.11.0 健康状态，供门/探活消费）
 
@@ -60,8 +82,10 @@ BLOCK_MARKERS = (
 )
 
 
-def _note_status(name, status, note=""):
+def _note_status(name, status, note="", mark=True):
     BACKEND_STATUS[name] = {"status": status, "note": (note or "")[:160], "at": time.time()}
+    if status == "blocked" and mark:
+        _mark_blocked(name)
 
 
 def _note_exception(name, exc):
@@ -91,6 +115,11 @@ def backend_health():
 
 
 TAG_RE = re.compile(r"<[^>]+>")
+# v0.11.0c：剥 script/style/注释——否则片段文本混入 JS/CSS，值匹配会命中版本号等噪音
+# （实测：so.com 首个结果块纯为 CSS；bing 页面含 "v=20200925b"，
+#  子串匹配 "2009" in "20200925" 为 True → 证据门可能凭版本号"支持"一个值替换）
+NOISE_RE = re.compile(r"<(script|style)\b[^>]*>.*?</\1\s*>", re.S | re.I)
+COMMENT_RE = re.compile(r"<!--.*?-->", re.S)
 
 
 def _settings_cfg():
@@ -133,7 +162,9 @@ def _limits():
 
 
 def _strip_tags(s):
-    return re.sub(r"\s+", " ", html.unescape(TAG_RE.sub(" ", s or ""))).strip()
+    s = NOISE_RE.sub(" ", s or "")
+    s = COMMENT_RE.sub(" ", s)
+    return re.sub(r"\s+", " ", html.unescape(TAG_RE.sub(" ", s))).strip()
 
 
 _IPV4_PATCHED = False
@@ -233,6 +264,22 @@ def _back_baidu(query, timeout):
     return out
 
 
+def _back_so360(query, timeout):
+    """360 搜索（v0.11.0c 新增）：2026-09-13 实测**唯一免 key 且可用的通用搜索后端**
+    （sogou 403、baidu 反爬、bing 召回差、境外端点不可达）。csqa-07 实测其第 2 条结果块即
+    协会官网 hongkongssa.com「由 2009 年成立至今」——真·独立证据。"""
+    h = _http_get("https://www.so.com/s?q=" + urllib.parse.quote(query), timeout)
+    reason = _detect_block(h)
+    if reason:
+        _note_status("so360", "blocked", f"反爬页指纹: {reason}")
+        return []
+    blocks = re.findall(r'<li class="res-list.*?</li>', h, re.S)
+    out = _pack_blocks(blocks)
+    _note_status("so360", "ok" if out else "unparsed",
+                 "" if out else f"HTML {len(h)} 字符但命中 0 个 res-list 块")
+    return out
+
+
 def _back_cmd(query, timeout):
     """自定义检索后端（插件口）：`MJC_KNOWLEDGE_CMD="<命令模板，含 {query}>"`。
 
@@ -271,7 +318,8 @@ def _back_cmd(query, timeout):
         return []
 
 
-BACKENDS = {"sogou": _back_sogou, "bing": _back_bing, "baidu": _back_baidu, "cmd": _back_cmd}
+BACKENDS = {"so360": _back_so360, "sogou": _back_sogou, "bing": _back_bing,
+            "baidu": _back_baidu, "cmd": _back_cmd}
 
 
 def _norm_snippet(s):
@@ -353,7 +401,8 @@ def _search_merge_parallel(query, names, timeout, min_total, retry_empty):
         for fut in concurrent.futures.as_completed(futs):
             results[futs[fut]] = fut.result()
     if retry_empty:
-        empties = [n for n in names if results.get(n, ([], False))[1] and not results[n][0]]
+        empties = [n for n in names if results.get(n, ([], False))[1] and not results[n][0]
+                   and (BACKEND_STATUS.get(n) or {}).get("status") != "blocked"]
         if empties:
             with concurrent.futures.ThreadPoolExecutor(max_workers=len(empties)) as ex:
                 futs = {ex.submit(_fetch, n): n for n in empties}
@@ -394,7 +443,12 @@ def _search_merge(query, backends, timeout, min_total, max_backends, retry_empty
     if parallel is None:
         parallel = _parallel_enabled()
     if parallel:
-        names = [n for n in backends if BACKENDS.get(n)][:max_backends]
+        names = [n for n in backends if BACKENDS.get(n) and not _in_cooldown(n)][:max_backends]
+        if not names:
+            for n in backends:
+                if BACKENDS.get(n):
+                    _note_status(n, "blocked", "反爬冷却期内，本轮跳过（避免加重封禁）", mark=False)
+            return None
         return _search_merge_parallel(query, names, tmo, min_total, retry_empty)
     merged, seen, tried, contrib = [], set(), [], []
     for name in backends:
@@ -404,9 +458,15 @@ def _search_merge(query, backends, timeout, min_total, max_backends, retry_empty
         if not fn:
             continue
         tried.append(name)
+        if _in_cooldown(name):
+            # 冷却期内跳过（不重试、不再触发）；状态仍记 blocked，让上层如实判 error 而非"无证据"
+            _note_status(name, "blocked", "反爬冷却期内，本轮跳过（避免加重封禁）", mark=False)
+            continue
         snips, ok = _merge_try_backend(name, fn, query, tmo)
-        if not snips and ok and retry_empty:
-            snips, _ = _merge_try_backend(name, fn, query, tmo)  # 空结果重试 1 次
+        was_blocked = (BACKEND_STATUS.get(name) or {}).get("status") == "blocked"
+        if not snips and ok and retry_empty and not was_blocked:
+            # 刚被判 blocked 的后端不立刻重试（实测会加重封禁）——冷却期内由 _in_cooldown 跳过
+            snips, _ = _merge_try_backend(name, fn, query, tmo)
         if snips and _merge_extend(merged, seen, snips):
             contrib.append(name)
         if len(merged) >= min_total:
