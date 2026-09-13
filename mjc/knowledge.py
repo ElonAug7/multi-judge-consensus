@@ -84,7 +84,39 @@ def _strip_tags(s):
     return re.sub(r"\s+", " ", html.unescape(TAG_RE.sub(" ", s or ""))).strip()
 
 
+_IPV4_PATCHED = False
+
+
+def _prefer_ipv4():
+    """v0.10 P3：本机 IPv6 路由不稳（2026-09-13 实测：连接卡在 SYN-SENT 直到超时）
+    → 检索层优先 IPv4。惰性生效（仅在真正发起检索时打补丁，避免影响无关进程）。
+    只重排 getaddrinfo 结果（IPv4 在前、IPv6 兵底），不删地址；env MJC_KNOWLEDGE_IPV4=0 可关。"""
+    global _IPV4_PATCHED
+    if _IPV4_PATCHED:
+        return
+    _IPV4_PATCHED = True
+    if os.environ.get("MJC_KNOWLEDGE_IPV4", "1").strip().lower() in ("0", "off", "false", "no"):
+        return
+    import socket as _socket
+    orig = _socket.getaddrinfo
+    if getattr(orig, "_mjc_ipv4", False):
+        return
+
+    def _gai(*a, **k):
+        res = orig(*a, **k)
+        try:
+            v4 = [r for r in res if r and r[0] == _socket.AF_INET]
+            v6 = [r for r in res if r and r[0] != _socket.AF_INET]
+            return (v4 + v6) if v4 else res
+        except Exception:
+            return res
+
+    _gai._mjc_ipv4 = True
+    _socket.getaddrinfo = _gai
+
+
 def _http_get(url, timeout):
+    _prefer_ipv4()
     req = urllib.request.Request(url, headers={
         "User-Agent": UA, "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.5"})
     with urllib.request.urlopen(req, timeout=timeout) as r:
@@ -197,7 +229,58 @@ def _merge_try_backend(name, fn, query, timeout):
         return [], False
 
 
-def _search_merge(query, backends, timeout, min_total, max_backends, retry_empty=True):
+def _parallel_enabled():
+    """v0.10 P3b：多后端并行检索开关（默认关，保持串行早停语义）。
+    env MJC_KNOWLEDGE_PARALLEL=1 或 settings.knowledge.parallel_backends=true 开启。"""
+    env = os.environ.get("MJC_KNOWLEDGE_PARALLEL", "").strip().lower()
+    if env in ("1", "on", "true", "yes"):
+        return True
+    if env in ("0", "off", "false", "no"):
+        return False
+    try:
+        return bool(_settings_cfg().get("parallel_backends"))
+    except Exception:
+        return False
+
+
+def _search_merge_parallel(query, names, timeout, min_total, retry_empty):
+    """并行版合并检索：所有后端同时发（首轮不睡限速），取全部结果后按原名次合并。
+    代价：不早停（会多打几个后端）；仅 opt-in。返回与 _search_merge 同结构。"""
+    import concurrent.futures
+    if not names:
+        return None
+    results = {}
+
+    def _fetch(n):
+        try:
+            return _merge_try_backend(n, BACKENDS[n], query, timeout)
+        except Exception:
+            return [], False
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(names)) as ex:
+        futs = {ex.submit(_fetch, n): n for n in names}
+        for fut in concurrent.futures.as_completed(futs):
+            results[futs[fut]] = fut.result()
+    if retry_empty:
+        empties = [n for n in names if results.get(n, ([], False))[1] and not results[n][0]]
+        if empties:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=len(empties)) as ex:
+                futs = {ex.submit(_fetch, n): n for n in empties}
+                for fut in concurrent.futures.as_completed(futs):
+                    results[futs[fut]] = fut.result()
+    merged, seen, contrib = [], set(), []
+    for n in names:
+        snips, _ok = results.get(n, ([], False))
+        if snips and _merge_extend(merged, seen, snips):
+            contrib.append(n)
+    if not merged:
+        return None
+    return {"backend": "+".join(contrib or names), "query": query, "snippets": merged,
+            "fetched": len(merged), "backends_tried": list(names)}
+
+
+def _search_merge(query, backends, timeout, min_total, max_backends, retry_empty=True,
+                  parallel=None):
     """v0.9.1 多后端合并检索（知识证据门默认路径）：
     - 按 backends 顺序累积去重（URL / 归一化文本相同 → 同一 snippet，跨后端不重复计数）；
     - 停止：去重后累积 ≥ min_total 或已试满 max_backends（先到先停）；
@@ -216,6 +299,11 @@ def _search_merge(query, backends, timeout, min_total, max_backends, retry_empty
     except (TypeError, ValueError):
         max_backends = 3
     tmo = timeout or timeout_from_settings()
+    if parallel is None:
+        parallel = _parallel_enabled()
+    if parallel:
+        names = [n for n in backends if BACKENDS.get(n)][:max_backends]
+        return _search_merge_parallel(query, names, tmo, min_total, retry_empty)
     merged, seen, tried, contrib = [], set(), [], []
     for name in backends:
         if len(tried) >= max_backends:
@@ -238,15 +326,16 @@ def _search_merge(query, backends, timeout, min_total, max_backends, retry_empty
 
 
 def search(query, backends=None, timeout=None, merge=False,
-           min_total=3, max_backends=3, retry_empty=True):
+           min_total=3, max_backends=3, retry_empty=True, parallel=None):
     """按序尝试后端。merge=False（默认，行为与 v0.9.0 完全一致）：第一个有结果的即返回，带缓存 + 限速。
-    merge=True（v0.9.1）：多后端累积合并（见 _search_merge）；不缓存，避免与非 merge 结果互污。"""
+    merge=True（v0.9.1）：多后端累积合并（见 _search_merge）；不缓存，避免与非 merge 结果互污。
+    parallel=True（v0.10 opt-in）：merge 模式下多后端并行检索（不早停，换延迟）。"""
     query = (query or "").strip()
     if not query:
         return None
     if merge:
         return _search_merge(query, backends if backends is not None else configured_backends(),
-                             timeout, min_total, max_backends, retry_empty)
+                             timeout, min_total, max_backends, retry_empty, parallel)
     key = query[:300]
     hit = _CACHE.get(key)
     if hit and time.time() - hit[0] < _CACHE_TTL:
@@ -283,11 +372,13 @@ def timeout_from_settings():
         return 12.0
 
 
-def fetch_evidence(query, backends=None, merge=False, min_total=3, max_backends=3):
+def fetch_evidence(query, backends=None, merge=False, min_total=3, max_backends=3, parallel=None):
     """给仲裁/证据门用的证据获取（尊重 max_per_review 的外层约束）。
-    merge=True（v0.9.1）：多后端累积合并（证据门/调试默认）；默认 False = 与原行为逐字节一致。"""
+    merge=True（v0.9.1）：多后端累积合并（证据门/调试默认）；默认 False = 与原行为逐字节一致。
+    parallel=True（v0.10 opt-in）：merge 模式下多后端并行（不早停）。"""
+    kw = {"parallel": parallel} if parallel is not None else {}
     return search(query, backends=backends, merge=merge,
-                  min_total=min_total, max_backends=max_backends)
+                  min_total=min_total, max_backends=max_backends, **kw)
 
 
 class Budget:
