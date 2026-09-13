@@ -162,6 +162,25 @@
   "degrade": null,
   "cache": null
  },
+ "repair": {
+  "resample_gate": {
+   "enabled": false,
+   "n": 3,
+   "min_support": 2,
+   "note": "盲重采样支持门（v0.8.0）：值替换需在看不到原答的重复采样中获多数支持；conflict → 直接阻断"
+  },
+  "evidence_gate": {
+   "enabled": false,
+   "min_snippets": 2,
+   "merge_backends": true,
+   "note": "知识证据门（v0.9.0/v0.9.1）：值替换可由外部检索证据放行；v0.11.0 起检索查询只含问题句、不含新旧值（否则属自我证明）"
+  },
+  "evidence_revise": {
+   "enabled": false,
+   "max_snippets": 6,
+   "note": "检索增强修订 v0.10 P2（RARR）：先把检索证据注入生产者提示词，让修复有据可依；默认关（opt-in）"
+  }
+ },
  "limits": {
   "gate": 1,
   "auto": 1,

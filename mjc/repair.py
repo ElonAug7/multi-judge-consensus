@@ -19,10 +19,17 @@ MJC · repair.py — 双生产者修订共识（零幻觉架构 · 修复环节�
         的重复采样中获得多数支持（supported），否则阻断（resample-xxx）。
   - v0.9.0 知识证据门（settings.repair.evidence_gate，默认关 · opt-in）：
       · 值替换在盲重采样"未支持"（inconclusive/skipped）或重采样门未启用时，可由外部
-        检索证据放行：查询 = 任务（截断 ≤80 字）+ 新增值 → knowledge.fetch_evidence；
+        检索证据放行：查询 = 问题句（去指令模板，≤80 字）→ knowledge.fetch_evidence；
         片段中"含新值且不含旧值"数 ≥ min_snippets → 放行，否则阻断（resample-evidence-insufficient）；
       · conflict 不可被证据覆盖（直接阻断）；检索异常保守阻断（resample-evidence-error）；
         两门都关时行为与此前完全一致（默认放行）。
+      · **v0.11.0 证据独立性修复（重要 · 修的是实验效度）**：旧实现把 new_vals 拼进检索
+        查询（`_evidence_query`），检索"2009"必然返回含 2009 的页面 → support 只反映
+        "检索词命中"，属循环论证（自证），不构成独立证据（P6-② 演示的 query 字段即为
+        "…哪一年 2009"）。现在：查询只含问题句，并**强制剔除 old/new 值的字面量**。
+      · **v0.11.0 指令模板去噪**：旧实现的查询含题面指令"请用一句话以内回答下面的问题："，
+        抓取型后端会命中"请"的字典页（实测 6/6 片段全是"请"字释义）→ 证据全废。现在由
+        `task_question()` 先剥指令模板，只检索真正的问题句。
   - v0.9.1 证据检索加固：知识证据门默认改用多后端合并检索（settings.repair.evidence_gate
       .merge_backends，默认开）——累积去重 + 空结果重试 + 失败降级，消除抓取后端波动
       导致的证据误判（csqa-07 复现：首调某后端瞬时空结果即降级误判）。
@@ -116,12 +123,50 @@ def _resample_gate(task, old_vals, new_vals):
         return None
 
 
-def _evidence_query(task, new_vals):
-    """证据检索查询：任务截断 ≤80 字 + 新增值（空格分隔；总长 ≤120）。"""
-    t = re.sub(r"\s+", " ", (task or "")).strip()[:80]
-    vals = " ".join(sorted(str(v) for v in (new_vals or [])))
-    q = (t + (" " + vals if vals else "")).strip()
-    return q[:120]
+_INSTRUCTION_HINT = re.compile(
+    r"(请|回答|问题|判断|简述|说明|解释|以下|下述|Question|Answer|Q\s*[:：])", re.I)
+
+
+def task_question(task):
+    """从任务提示词中抽出"真正的问题句"，剥离指令模板（v0.11.0）。
+
+    动机（实测）：题面形如「请用一句话以内回答下面的问题：\\n香港平安钟协会最早成立于哪一年？」，
+    旧实现把整段当检索词 → 抓取型后端命中"请"的字典页（6/6 片段均为"请"字释义）→ 证据全废。
+    策略（保守，宁可少剥不可多剥）：
+      1) 多行：优先取含问号的行（取最长一条，避开标题行）；无问号则取最后一行；
+      2) 单行且首个"：/:"前含指令词、冒号后有实质内容（≥4 字）→ 取冒号后；
+      3) 其余原样返回。
+    """
+    t = (task or "").strip()
+    if not t:
+        return ""
+    lines = [x.strip() for x in t.splitlines() if x.strip()]
+    if len(lines) >= 2:
+        qs = [x for x in lines if x.endswith("？") or x.endswith("?")]
+        if qs:
+            return max(qs, key=len)
+        return lines[-1]
+    line = lines[0]
+    m = re.match(r"^(.{0,40}?)[：:]\s*(.+)$", line, re.S)
+    if m and _INSTRUCTION_HINT.search(m.group(1)) and len(m.group(2).strip()) >= 4:
+        return m.group(2).strip()
+    return line
+
+
+def _evidence_query(task, old_vals=None, new_vals=None):
+    """证据检索查询：**只含问题句**（去指令模板，≤80 字）——v0.11.0 证据独立性修复。
+
+    旧实现（≤v0.10.0）：query = 任务截断 + 新增值。这使证据门**自我证明**：
+    检索"2009"必然返回含 2009 的页面，support 只反映检索词命中，而非外部独立佐证。
+    现在：查询不含待验证的新值，也不含旧值（旧值是待核验的错误假设，会把检索带偏）；
+    即便调用方误传，字面量也会被强制剔除。
+    """
+    q = re.sub(r"\s+", " ", task_question(task)).strip()[:80]
+    for v in list(new_vals or []) + list(old_vals or []):
+        s = str(v).strip()
+        if s and s in q:
+            q = q.replace(s, " ")
+    return re.sub(r"\s+", " ", q).strip()[:120]
 
 
 def _snippet_supports(text, old_vals, new_vals):
@@ -137,6 +182,7 @@ def _snippet_supports(text, old_vals, new_vals):
 def evidence_check(task, old_vals, new_vals, min_snippets=2, merge=True):
     """执行一次证据检索并统计支持度（不读开关；知识证据门、CLI 调试与演示共用）。
     merge=True（默认，v0.9.1）走多后端合并检索；merge=False 保持旧「首个非空后端」路径。
+    v0.11.0：检索查询只含问题句、不含 old/new 值——否则证据门自我证明（见 _evidence_query）。
     返回 {"verdict": supported|insufficient|error, "support", "n_snippets", "min_snippets",
           "query", "backend", "supporting": [{title,url,excerpt}...]}；不抛出。
     基础设施异常 → verdict=error（调用方需保守处理，不得放行）。"""
@@ -144,7 +190,7 @@ def evidence_check(task, old_vals, new_vals, min_snippets=2, merge=True):
         ns = max(1, int(min_snippets))
     except Exception:
         ns = 2
-    query = _evidence_query(task, new_vals)
+    query = _evidence_query(task, old_vals, new_vals)
     try:
         from mjc import knowledge
         res = knowledge.fetch_evidence(query, merge=merge)
@@ -306,13 +352,14 @@ def _evidence_revise_cfg():
 
 
 def _fetch_revise_evidence(task, prev, max_snippets=6):
-    """给修订者先取证：query = 题目(≤80字)；返回片段文本列表（失败 → []）。
-    注意：**不得拼入原文旧值**——旧值是待核验的错误假设，会把检索带偏。"""
+    """给修订者先取证：query = 问题句(≤80字，v0.11.0 去指令模板)；返回片段文本列表（失败 → []）。
+    注意：**不得拼入原文旧值**——旧值是待核验的错误假设，会把检索带偏。
+    也不得拼入任何候选新值（那是待验证的结论，不是检索线索）。"""
     try:
         from mjc import knowledge
     except Exception:
         return []
-    q = (task or "").strip()[:80]
+    q = task_question(task)[:80]
     if not q:
         return []
     try:
@@ -354,7 +401,13 @@ def dual_revise(task, prev, feedback, specs=None, timeout=120):
     result = {"mode": "incomplete", "applied": prev, "revs": revs, "tokens": 0,
               "evidence_revise": {"enabled": ev_on, "snippets": len(ev_snips)}}
     if len(ok) < 2:
-        result["note"] = "有效修订不足 2 路，保守保留原文"
+        # v0.11.0：生产者失败必须外显（实测 glm-4-plus 欠费 429 时，结果只写"不足 2 路"，
+        # 无人能看出真因，实验被静默降级）。
+        errs = [f"{r.get('spec')}: {str(r.get('error'))[:80]}"
+                for r in revs if not (r.get("text") or "").strip()]
+        result["producer_errors"] = errs
+        result["note"] = "有效修订不足 2 路，保守保留原文" + (
+            "（生产者失败：" + "；".join(errs) + "）" if errs else "")
         return result
     if len(ok) == 2:
         agreed, pick, reason = _consensus(prev, ok[0]["text"], ok[1]["text"])

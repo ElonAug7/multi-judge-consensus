@@ -69,7 +69,7 @@ Detect → arbitrate → repair → re-check — engineered so the system never 
   see `mjc/resample.py`, self-consistency line) before adoption.
 - **Knowledge evidence gate (v0.9.0)** — when blind resampling is inconclusive (or the resample gate is
   off), a value replacement can still be cleared by **external retrieval evidence**: an opt-in gate
-  (settings `repair.evidence_gate`, off by default) searches (task + proposed value, ≤80 chars) and
+  (settings `repair.evidence_gate`, off by default) searches **the question only** (≤80 chars) and
   requires ≥ `min_snippets` snippets that contain the new value and **not** the old one. A resample
   `conflict` can never be overridden by evidence; retrieval errors block conservatively. Both gates
   off keeps the previous default behavior exactly.
@@ -77,6 +77,15 @@ Detect → arbitrate → repair → re-check — engineered so the system never 
   configured backends (`merge_backends` in `repair.evidence_gate`, **on by default**): stops at ≥3 unique
   snippets or 3 backends tried, retries a backend once on an empty result, and continues past failures —
   removing the single-backend flakiness reproduced in the csqa-07 demo (`merge_backends: false` = old path).
+- **Evidence independence + query hygiene (v0.11.0)** — two validity bugs found by auditing the csqa-07
+  evidence demo, both fixed:
+  (1) the query used to be `task + proposed value`, so searching "2009" trivially returned pages containing
+  "2009" — the gate was **self-certifying** (`support` measured keyword echo, not independent corroboration).
+  The query now contains the question only, and any old/new value literal is stripped defensively.
+  (2) the query used to include the prompt's instruction wrapper ("请用一句话以内回答下面的问题："), which
+  scraped back dictionary pages for the character "请" (6/6 snippets) — `task_question()` now strips the
+  wrapper first. Also: producer failures are surfaced (`producer_errors` + note) instead of degrading to a
+  bare "fewer than 2 revisions" message.
 - **Revision rules** (`mjc/revision.py`) — the repairer must never introduce new specific facts; when in doubt,
   hedge or soften instead of substituting a guess (reviewer suggestions are leads, not truth).
 - **Gate default = full committee** — deliverable gates skip the cheap screen by default (`--screen` to opt back in).
