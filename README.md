@@ -96,6 +96,23 @@ Detect → arbitrate → repair → re-check — engineered so the system never 
   hedge or soften instead of substituting a guess (reviewer suggestions are leads, not truth).
 - **Gate default = full committee** — deliverable gates skip the cheap screen by default (`--screen` to opt back in).
 
+### 轻量化（v0.11.0j/k，生产向；实验默认不变）
+
+实测开销（2026-09-13，C9f 单题，`api_calls`）：干净内容 **4 次**、普通非 pass **6–18 次**、
+全链（委员会+仲裁+证伪+两轮修订+复审）**32 次**。重尾集中在**非 pass 路径**，可按下面几档削减：
+
+| 杠杆 | 配置 | 实测/预期 | 代价 |
+|---|---|---|---|
+| **浏览器检索后端** | `knowledge.backends=["browser"]` | 证据等待 **300s → 2.5s**（无反爬、无冷却） | 需本机有 Chrome |
+| **批量仲裁** | `factcheck.batch=true` | 仲裁块 **意见数×2 → 2** 次（4 条时 8→2） | 单次调用需复核多条，判断略粗 |
+| **初筛** | `screen_enabled=true` + `screen_model` | 干净内容 **1 次**放行（跳过委员会 3 次） | 漏检风险由 `screen_conf` 控制 |
+| **经济档委员会** | `current.tier="eco"` | 3 模型 → 2 模型 | 检出率需复测 |
+| **少一轮复审** | 调用方 `--max-rev 1` | 省掉一整轮（委员会+证伪+仲裁） | 少一次收敛机会 |
+
+默认全部保持不变（`batch=false`、C 臂显式 `no_screen=True`、证据门 opt-in），
+以免污染 A/B 口径；上面是**生产部署**时的推荐配方。
+
+
 **Tier presets** (one-click in the admin console):
 
 | Tier | Committee | Strategy |

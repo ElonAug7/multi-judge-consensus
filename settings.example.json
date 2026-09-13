@@ -209,5 +209,10 @@
   "enabled": true,
   "model": "",
   "min_len": 10
+ },
+ "factcheck": {
+  "batch": false,
+  "max_issues": 3,
+  "note": "v0.11.0k 轻量化：batch=true 时每个仲裁员一次调用复核全部意见——逐条 = 意见数×仲裁员数（实测 4 条×2 人=8 次调用），批量 = 2 次。实测 C9f 单题 4–32 次调用中，仲裁块是最肥的一块。默认 false 保持不变。"
  }
 }

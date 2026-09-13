@@ -108,6 +108,9 @@ DEFAULT = {
                 "screen_conf": None, "degrade": None, "cache": None},
     "limits": {"gate": 1, "auto": 1, "scan": 1},
     "falsifier": {"enabled": True, "model": "", "min_len": 40},
+    # v0.11.0k 轻量化：事实仲裁的批量开关。默认 false=逐条（行为与旧版一致）。
+    # batch=true → 每个仲裁员**一次**调用复核全部意见（意见数×2 次 → 2 次）。
+    "factcheck": {"batch": False, "max_issues": 3},
     "consensus": {"dissent_guard": {"enabled": True,
                                      "blocking_types": ["factual_error", "hallucination", "logical_error"],
                                      "min_conf": 0.0}},

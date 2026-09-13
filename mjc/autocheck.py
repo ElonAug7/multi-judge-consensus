@@ -66,11 +66,22 @@ def _collect_arb_issues(record):
     return [merged[k] for k in order]
 
 
-def _arbitrate(task, content, issues, timeout=90, max_issues=3):
-    """非 pass 时对事实类意见做独立仲裁（mjc.factcheck）；失败返回 None（不阻塞主流程）。"""
+def _arbitrate(task, content, issues, timeout=90, max_issues=None):
+    """非 pass 时对事实类意见做独立仲裁（mjc.factcheck）；失败返回 None（不阻塞主流程）。
+
+    v0.11.0k 轻量化：批量仲裁由 settings.factcheck.batch 控制（默认 false=逐条，行为不变）。
+    逐条 = 意见数 × 仲裁员数（4 条 × 2 人 = 8 次调用）；批量 = 2 次（每人一次复核全部意见）。
+    """
     try:
-        from mjc import factcheck
-        r = factcheck.arbitrate_issues(task, content, issues, timeout=timeout, max_issues=max_issues)
+        from mjc import factcheck, settings as _settings
+        cfg = (_settings.load().get("factcheck") or {})
+        if max_issues is None:
+            try:
+                max_issues = int(cfg.get("max_issues", 3))
+            except (TypeError, ValueError):
+                max_issues = 3
+        r = factcheck.arbitrate_issues(task, content, issues, timeout=timeout,
+                                       max_issues=max_issues, batch=bool(cfg.get("batch", False)))
         return r if isinstance(r, dict) else None
     except Exception:
         return None

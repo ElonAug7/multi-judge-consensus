@@ -12,6 +12,7 @@ MJC · factcheck.py — 事实仲裁（对委员会“事实错误 + 替换建�
 用法：arbitrate_issues(task, content, issues, committee=None) → {"items": [...], "calls": N}
 """
 import json
+import re
 
 from mjc import providers
 from mjc import settings
@@ -38,6 +39,35 @@ ARB_PROMPT = """你是独立仲裁员，负责复核另一位审查员的“事�
   "note": "一句话依据（不确定就说明为何不确定）"
 }}
 要求：
+- original_wrong：原内容中被指部分是否确实有事实错误。不确定 → "unknown"（严禁凭印象断言）。
+- suggestion_correct：审查员给出了具体替换值时，该值是否正确；无具体替换值 → "unknown"。
+- 你的知识可能过时或不足；没有把握时必须填 "unknown"。
+"""
+
+ARB_BATCH_PROMPT = """你是独立仲裁员，负责**逐条**复核另一位审查员的多条“事实错误”声明是否成立。这些声明可能是误报，请独立判断，不要预设审查员正确。
+
+【任务】
+{task}
+
+【被审内容（节选）】
+{content}
+
+【审查意见（共 {n} 条，请逐条复核）】
+{issues}
+{evidence_section}
+
+请对每一条意见**先**独立回答（不看审查员结论），再输出严格 JSON 数组（不要 markdown 代码块、不要多余文字）：
+[
+  {{
+    "idx": 1,
+    "my_answer": "（该条争议点）你独立认为的正确答案；不确定写 不确定",
+    "original_wrong": "yes | no | unknown",
+    "suggestion_correct": "yes | no | unknown",
+    "note": "一句话依据（不确定就说明为何不确定）"
+  }}
+]
+要求：
+- 必须为**每一条**意见各输出一个对象，idx 与上面编号一一对应（1…{n}），不得遗漏或合并。
 - original_wrong：原内容中被指部分是否确实有事实错误。不确定 → "unknown"（严禁凭印象断言）。
 - suggestion_correct：审查员给出了具体替换值时，该值是否正确；无具体替换值 → "unknown"。
 - 你的知识可能过时或不足；没有把握时必须填 "unknown"。
@@ -113,9 +143,105 @@ def _evidence_section(ev):
     return "\n".join(lines) + "\n"
 
 
-def arbitrate_issues(task, content, issues, committee=None, timeout=90, max_issues=3):
+def _extract_any(raw):
+    """抽取 JSON（**兼容顶层数组**）。judge.extract_json 只认对象，而批量仲裁要求返回数组——
+    直接用它会导致每条意见都拿不到票 → 全部 unknown（保守但白花钱）。"""
+    t = (raw or "").strip()
+    if t.startswith("```"):
+        t = re.sub(r"^```[a-zA-Z]*\s*", "", t)
+        t = re.sub(r"\s*```$", "", t)
+    try:
+        return json.loads(t)
+    except Exception:
+        pass
+    m = re.search(r"\[.*\]", t, re.S)
+    if m:
+        try:
+            return json.loads(m.group(0))
+        except Exception:
+            pass
+    return extract_json(t)
+
+
+def _as_list(obj):
+    """把 extract_json 的结果规整成 list（容忍 {"items":[...]} / 单个对象）。"""
+    if isinstance(obj, list):
+        return obj
+    if isinstance(obj, dict):
+        for k in ("items", "results", "verdicts", "data"):
+            if isinstance(obj.get(k), list):
+                return obj[k]
+        return [obj]
+    return []
+
+
+def _batch_arbitrate(picked, judges, task, content, kb_budget, timeout):
+    """批量仲裁（v0.11.0k · 轻量化）：**一次调用复核全部意见**，而非每条意见各调一次。
+
+    开销对比：原实现 = 意见数 × 仲裁员数（4 条 × 2 人 = 8 次）；批量为 2 次（每个仲裁员 1 次）。
+    语义不变：仍按 `_decide(votes)` 逐条出 outcome，票来自各仲裁员对应对项的 JSON 条目；
+    解析失败/缺项 → 该条 outcome=unknown（保守，与"无可用仲裁模型"一致）。
+
+    返回 (items, calls)。
+    """
+    lines = []
+    for i, it in enumerate(picked, 1):
+        lines.append(f'{i}. 意见：{(it.get("desc") or "")[:300]}\n   建议：{(it.get("sug") or "（无）")[:200]}')
+    ev_blocks = []
+    for i, it in enumerate(picked, 1):
+        ev = None
+        if kb_budget:
+            try:
+                q = (it.get("query") or ((task or "")[:60] + " " + (it.get("desc") or "")[:60])).strip()[:140]
+                ev = kb_budget.take(q)
+            except Exception:
+                ev = None
+        it["_ev"] = ev
+        if ev:
+            ev_blocks.append(f"（第 {i} 条相关检索证据）" + _evidence_section(ev).strip())
+    prompt = ARB_BATCH_PROMPT.format(
+        n=len(picked), task=(task or "")[:400], content=(content or "")[:800],
+        issues="\n".join(lines), evidence_section=("\n".join(ev_blocks) if ev_blocks else "（无外部证据）"))
+    per_issue = {i: [] for i in range(1, len(picked) + 1)}
+    calls = 0
+    for j in judges:
+        try:
+            raw = providers.chat(j.provider, [{"role": "user", "content": prompt}],
+                                 model=j.model, temperature=0.1, max_tokens=6000, timeout=timeout)
+            calls += 1
+            entries = _as_list(_extract_any(raw))
+        except Exception as e:  # noqa
+            calls += 1
+            entries = []
+            per_issue.setdefault(0, []).append({"judge": j.name, "error": str(e)[:120]})
+        for e in entries:
+            if not isinstance(e, dict):
+                continue
+            try:
+                idx = int(e.get("idx") or e.get("index") or 0)
+            except (TypeError, ValueError):
+                continue
+            if idx in per_issue:
+                per_issue[idx].append({"judge": j.name,
+                                       "my_answer": str(e.get("my_answer", ""))[:80],
+                                       "original_wrong": _norm_bool(e.get("original_wrong")),
+                                       "suggestion_correct": _norm_bool(e.get("suggestion_correct")),
+                                       "note": str(e.get("note", ""))[:160]})
+    items = []
+    for i, it in enumerate(picked, 1):
+        votes = per_issue.get(i) or []
+        ev = it.get("_ev")
+        items.append({"judge_id": it.get("judge_id"), "type": it.get("type"),
+                      "desc": (it.get("desc") or "")[:200], "sug": (it.get("sug") or "")[:150],
+                      "outcome": _decide(votes) if votes else "unknown", "votes": votes,
+                      "evidence": ({"backend": ev.get("backend"), "n": len(ev.get("snippets") or [])} if ev else None)})
+    return items, calls
+
+
+def arbitrate_issues(task, content, issues, committee=None, timeout=90, max_issues=3, batch=False):
     """issues: [{judge_id, type, desc, sug}]（调用方已过滤事实类）。
-    返回 {"items": [{...issue, outcome, votes}], "calls": N}；基础设施异常 → {"error": ...} 不抛出。"""
+    返回 {"items": [{...issue, outcome, votes}], "calls": N}；基础设施异常 → {"error": ...} 不抛出。
+    batch=True（v0.11.0k）：批量化——每个仲裁员一次调用复核全部意见（N×2 次 → 2 次）。"""
     if committee is None:
         try:
             committee = settings.effective()["committee"]
@@ -130,8 +256,9 @@ def arbitrate_issues(task, content, issues, committee=None, timeout=90, max_issu
     except Exception:
         kb_budget = None
     seen = set()
+    picked = []
     for it in issues:
-        if len(items) >= max_issues:
+        if len(picked) >= max_issues:
             break
         desc = (it.get("desc") or "").strip()
         if not desc:
@@ -140,6 +267,22 @@ def arbitrate_issues(task, content, issues, committee=None, timeout=90, max_issu
         if key in seen:
             continue
         seen.add(key)
+        picked.append(it)
+    if batch and picked:
+        excl = set()
+        for it in picked:
+            excl.update(it.get("judge_ids") or ([it.get("judge_id")] if it.get("judge_id") else []))
+        judges, _picks = _pick_arbiters(committee, sorted(excl), k=2)
+        if not judges:
+            return {"items": [{"judge_id": it.get("judge_id"), "type": it.get("type"),
+                               "desc": (it.get("desc") or "")[:200], "sug": (it.get("sug") or "")[:150],
+                               "outcome": "unknown", "votes": [],
+                               "note": "无可用的独立仲裁模型"} for it in picked],
+                    "calls": 0, "batch": True}
+        b_items, b_calls = _batch_arbitrate(picked, judges, task, content, kb_budget, timeout)
+        return {"items": b_items, "calls": b_calls, "batch": True}
+    for it in picked:
+        desc = (it.get("desc") or "").strip()
         excl = it.get("judge_ids") or ([it.get("judge_id")] if it.get("judge_id") else [])
         judges, _picks = _pick_arbiters(committee, excl, k=2)
         if not judges:

@@ -220,6 +220,65 @@ def test_evidence_injection():
     print("  ✅ 知识源：检索片段注入仲裁提示 + 证据记录")
 
 
+def test_batch_arbitration():
+    """v0.11.0k 轻量化：批量仲裁——每个仲裁员**一次**调用复核全部意见。
+    逐条模式 = 意见数 × 仲裁员数（2×2=4 次）；批量 = 2 次，且逐条 outcome 一致。
+    缺项/解析失败 → 该条 unknown（保守，与"无可用仲裁模型"同向）。"""
+    import json as _json
+    committee = ["deepseek:deepseek-v4-flash", "glm:glm-4-plus", "glm:glm-4-flash"]
+    issues = [
+        {"judge_id": "glm:glm-4-flash", "type": "factual_error", "desc": "甲说法有误", "sug": "改为 A"},
+        {"judge_id": "glm:glm-4-flash", "type": "factual_error", "desc": "乙说法有误", "sug": "改为 B"},
+    ]
+    # 两名仲裁员（排除申诉者 glm-4-flash）各自返回一个 JSON 数组
+    arr_yes = _json.dumps([{"idx": 1, "my_answer": "A", "original_wrong": "yes",
+                            "suggestion_correct": "yes", "note": "n"}])
+    arr_no = _json.dumps([{"idx": 1, "my_answer": "X", "original_wrong": "no",
+                           "suggestion_correct": "no", "note": "n"},
+                          {"idx": 2, "my_answer": "Y", "original_wrong": "yes",
+                           "suggestion_correct": "no", "note": "n"}])
+    fake, calls, restore = _ctx([arr_yes, arr_no])
+    try:
+        r = factcheck.arbitrate_issues("T", "C", issues, committee=committee, batch=True)
+        assert r.get("batch") is True, r
+        assert r["calls"] == 2, r["calls"]              # 2 名仲裁员 × 1 次
+        assert len(r["items"]) == 2, r
+        assert r["items"][0]["outcome"] == "unknown", r["items"][0]   # 一 yes 一 no → 不达标
+        assert r["items"][1]["outcome"] == "refuted", r["items"][1]   # 有 no 且无 yes
+    finally:
+        restore()
+
+    # 对照：逐条模式同一份回答需要 4 次调用（2 条 × 2 人）
+    one = _json.dumps({"my_answer": "A", "original_wrong": "yes", "suggestion_correct": "yes", "note": "n"})
+    fake, calls, restore = _ctx([one, one, one, one])
+    try:
+        r2 = factcheck.arbitrate_issues("T", "C", issues, committee=committee, batch=False)
+        assert r2["calls"] == 4, r2["calls"]
+        assert r2["items"][0]["outcome"] == "confirmed", r2["items"][0]
+        assert not r2.get("batch")
+    finally:
+        restore()
+
+    # 围栏/带废话的数组也必须能解析（回归：_extract_any 曾漏 import re → NameError 被吞成解析失败）
+    fenced = "```json\n" + _json.dumps([{"idx": 1, "my_answer": "A", "original_wrong": "yes",
+                                          "suggestion_correct": "yes", "note": "n"}]) + "\n```"
+    fake, calls, restore = _ctx([fenced, fenced])
+    try:
+        r4 = factcheck.arbitrate_issues("T", "C", [issues[0]], committee=committee, batch=True)
+        assert r4["items"][0]["outcome"] == "confirmed", r4
+    finally:
+        restore()
+
+    # 解析失败 → 全部 unknown（保守）
+    fake, calls, restore = _ctx(["完全不是 JSON", "也不是"])
+    try:
+        r3 = factcheck.arbitrate_issues("T", "C", issues, committee=committee, batch=True)
+        assert all(x["outcome"] == "unknown" for x in r3["items"]), r3
+    finally:
+        restore()
+    print("  ✅ 批量仲裁：2 次调用覆盖全部意见（对照逐条 4 次），失败保守判 unknown")
+
+
 def main():
     print("== factcheck 事实仲裁离线测试（零 API）==")
     test_confirmed_and_arbiter_selection()
@@ -229,6 +288,7 @@ def main():
     test_dedupe_and_cap()
     test_multi_claimant_exclusion()
     test_evidence_injection()
+    test_batch_arbitration()
     print("== factcheck 全部通过 ✅ ==")
 
 
