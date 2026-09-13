@@ -47,7 +47,12 @@ from mjc import providers
 from mjc.revision import build_messages
 
 DEFAULT_SPECS = ("deepseek:deepseek-v4-flash", "glm:glm-4-plus")
-_MAX_TOKENS = (12000, 16000)  # 推理模型：预算给足，防空响应
+# v0.11.0c：预算降级链。实测 dashscope:qwen-max 对 max_tokens>8192 直接 400
+# （"Range of max_tokens should be [1, 8192]"）→ 旧实现遇错即 break，qwen 系当生产者完全不可用。
+# 现在遇参数类错误依次降档重试；认证/余额类错误仍立即放弃（不浪费调用）。
+_TOKEN_BUDGETS = (12000, 16000, 4096, 2048)
+_FATAL_HINTS = ("401", "403", "429", "余额", "unauthorized", "invalid api key",
+                "authentication", "insufficient")
 
 
 def _split(spec):
@@ -169,22 +174,41 @@ def _evidence_query(task, old_vals=None, new_vals=None):
     return re.sub(r"\s+", " ", q).strip()[:120]
 
 
+def _value_in_text(value, text):
+    """值是否作为**独立数值**出现在文本中（v0.11.0c 精度修复）。
+
+    纯数字值走数字边界匹配：`2009` 不得命中 `20200925`。旧实现用裸子串匹配，实测 bing 页面含
+    版本号 `v=20200925b` → `"2009" in "20200925"` 为 True → 证据门可能凭版本号"支持"一次值替换
+    （假证据 = 放行幻觉的通道）。非数字值（人名/作品名等）保持子串匹配。
+    """
+    v = str(value or "").strip()
+    if not v:
+        return False
+    if re.fullmatch(r"\d+(?:\.\d+)?", v):
+        return re.search(r"(?<![\d.])" + re.escape(v) + r"(?![\d.])", text) is not None
+    return v in text
+
+
 def _snippet_supports(text, old_vals, new_vals):
-    """片段是否支持"新值"：含任一新增值且不含旧值（与 resample._has_new_and_no_old 同语义）。"""
+    """片段是否支持"新值"：含任一新增值且不含旧值（与 resample._has_new_and_no_old 同语义）。
+    v0.11.0c：两处判定均改为数字边界匹配（见 _value_in_text）。"""
     s = str(text or "")
     if not s:
         return False
-    if not any(str(v) in s for v in (new_vals or [])):
+    if not any(_value_in_text(v, s) for v in (new_vals or [])):
         return False
-    return not any(str(v) in s for v in (old_vals or []))
+    return not any(_value_in_text(v, s) for v in (old_vals or []))
 
 
-def evidence_check(task, old_vals, new_vals, min_snippets=2, merge=True):
+def evidence_check(task, old_vals, new_vals, min_snippets=2, merge=True, all_backends=True):
     """执行一次证据检索并统计支持度（不读开关；知识证据门、CLI 调试与演示共用）。
     merge=True（默认，v0.9.1）走多后端合并检索；merge=False 保持旧「首个非空后端」路径。
     v0.11.0：检索查询只含问题句、不含 old/new 值——否则证据门自我证明（见 _evidence_query）。
     v0.11.0b：读后端健康状态，区分「检索不到证据」与「根本没检索成」（抓取型后端被反爬拦截时，
     旧实现一律记 0 条 → 静默判 insufficient，真因不可见）。全后端被拦截 → verdict=error 且带 note。
+    v0.11.0c：all_backends=True（默认）问遍所有**健康**后端再统计——旧行为按 min_total=3 早停，
+    实测 bing 的通用「香港」页会凑满 3 条把检索截断，导致真正有证据的后端（sogou/so360）从未被问；
+    被反爬冷却的后端会被秒跳过，故成本极低。all_backends=False 回到旧的早停路径。
     返回 {"verdict": supported|insufficient|error, "support", "n_snippets", "min_snippets",
           "query", "backend", "supporting": [...], "backends": {name: {status,note,at}}}；不抛出。
     基础设施异常 → verdict=error（调用方需保守处理，不得放行）。"""
@@ -193,10 +217,13 @@ def evidence_check(task, old_vals, new_vals, min_snippets=2, merge=True):
     except Exception:
         ns = 2
     query = _evidence_query(task, old_vals, new_vals)
+    fetch_kw = {"merge": merge}
+    if merge and all_backends:
+        fetch_kw.update({"min_total": 999, "max_backends": 8})
     try:
         from mjc import knowledge
         pre = knowledge.backend_health() if hasattr(knowledge, "backend_health") else {}
-        res = knowledge.fetch_evidence(query, merge=merge)
+        res = knowledge.fetch_evidence(query, **fetch_kw)
         try:  # 只取本次调用期间**发生变化**的后端状态（快照比对，不依赖时钟精度）
             post = knowledge.backend_health() if hasattr(knowledge, "backend_health") else {}
             status = {n: v for n, v in (post or {}).items()
@@ -244,7 +271,8 @@ def _evidence_gate(task, old_vals, new_vals):
     except Exception:
         return None
     return evidence_check(task, old_vals, new_vals, min_snippets=cfg.get("min_snippets", 2),
-                          merge=bool(cfg.get("merge_backends", True)))
+                          merge=bool(cfg.get("merge_backends", True)),
+                          all_backends=bool(cfg.get("all_backends", True)))
 
 
 def _block_note(reason):
@@ -327,15 +355,18 @@ def _consensus(orig, a, b):
 def _call_one(spec, messages, timeout=120):
     provider, model = _split(spec)
     last_err = None
-    for budget in _MAX_TOKENS:
+    for budget in _TOKEN_BUDGETS:
         try:
             text = providers.chat(provider, messages, model=model, temperature=0.3,
                                   max_tokens=budget, timeout=timeout)
             if (text or "").strip():
                 return {"spec": spec, "text": text.strip(), "error": None}
+            last_err = last_err or "空响应"
         except Exception as e:  # noqa
             last_err = str(e)[:160]
-            break  # 认证类等错误直接记
+            if any(h in last_err.lower() for h in _FATAL_HINTS):
+                break  # 认证/余额/限流：换预算也没用，立即放弃
+            # 否则可能是 max_tokens 上限等参数问题 → 降档再试
     return {"spec": spec, "text": "", "error": last_err or "空响应"}
 
 
@@ -402,7 +433,14 @@ def _evidence_rules(snips):
     lines = ["【外部检索证据】（公开检索，可能不相关/过时；仅在直接相关时用于核验）"]
     for i, t in enumerate(snips, 1):
         lines.append(f"{i}. {t}")
-    lines.append("若证据明确给出正确值，可采用；若与本题无关或不足，忽略之；不得据此引入其它新事实。")
+    lines.append(
+        "若证据明确给出正确值，可采用；若与本题无关或不足，忽略之；不得据此引入其它新事实。\n"
+        # v0.11.0c：实测生产者会因【事实仲裁结果】里"未确认不得替换"而只敢弱化（把 1997 改成
+        # "未知年份"），即便证据就摆在眼前。故显式声明优先级，让外部证据成为"确认依据"。
+        "【优先级】上述外部检索证据优先于【事实仲裁结果】中的『未确认』判定："
+        "当证据直接、明确地给出本题所问事实的正确值（如成立年份）时，即以此证据为准采用该值，"
+        "『未确认不得替换具体事实』在此情形下不适用（外部可核验证据即为确认依据）；"
+        "证据不足或相关度存疑时，仍按原守则弱化表述、不得猜测。")
     return "\n".join(lines)
 
 
