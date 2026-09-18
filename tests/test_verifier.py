@@ -52,6 +52,11 @@ def run():
     check("π：第4位写 9 被抓住（应 5）",
           any("π 第4位小数是 5" in i["description"] for i in verifier.verify("圆周率第 4 位小数是 9。")))
     check("π：第4位写 5 不误报", verifier.verify("圆周率第 4 位小数是 5。") == [])
+    # ---- 新增：API 存在性 ----
+    check("API：os.foobar() 编造被抓住",
+          any("没有 foobar" in i["description"] for i in verifier.verify("使用 os.foobar() 读取文件。")))
+    check("API：os.listdir() 不误报", verifier.verify("使用 os.listdir() 列目录。") == [])
+    check("API：json.loads() 不误报", verifier.verify("使用 json.loads(s) 解析。") == [])
 
     # ---- 负样本/歧义：必须跳过 ----
     check("缺基数百分比跳过", verifier.verify("成本下降了 25%，效果显著。") == [])

@@ -9,11 +9,15 @@ MJC · verifier.py — 确定性验证器（P0：快/准/省三角的规则层�
   3. 显式求和：'18+12+20+25=85' / '= 75'（容差 ±0.01）
   4. 标准库成员：'pandas 是 Python 标准库'（查 sys.stdlib_module_names，零 LLM）
   5. 自相矛盾：同一量词出现两个不同值（'第4位是9' vs '第4位是5'）
+  6. 幂/次方：'2 的 10 次方 = 1000'（验算 X**Y）
+  7. π 常数：'π 第N位小数是 D'（对照 π 小数位）
+  8. API 存在性：'os.foobar()'（查安全白名单模块的 hasattr）
 
 命中 → 直接产出 revise 裁决（跳过 LLM，全程 0 调用），并附在审查记录里。
 歧义输入（缺基数、跨 2 月无年份、非显式算式）一律跳过——验证器的信誉 > 覆盖率。
 """
 import datetime
+import importlib
 import re
 import sys
 
@@ -83,6 +87,18 @@ POWER_EXPR = re.compile(r"(\d+(?:\.\d+)?)\s*的\s*(\d+)\s*(?:次方|次幂)\s*(?
 # π 小数位（已知常量，避免依赖 math）
 PI_DECIMALS = "14159265358979323846"
 PI_DIGIT = re.compile(r"(?:圆周率|π|pi)\s*[^。；\n]{0,24}?第\s*(\d+)\s*位\s*(?:小数|数字)?\s*(?:是|=|为)\s*(\d+)")
+
+# API 存在性：'os.foobar()' 函数调用形式（安全白名单模块才查，避免导入副作用）
+API_CALL = re.compile(r"([a-z_]\w*)\.([a-zA-Z_]\w*)\s*\(")
+SAFE_STDLIB = {
+    "os", "sys", "re", "json", "math", "datetime", "time", "random", "string",
+    "csv", "collections", "itertools", "functools", "pathlib", "io", "logging",
+    "argparse", "dataclasses", "enum", "typing", "decimal", "fractions",
+    "statistics", "copy", "heapq", "bisect", "uuid", "base64", "hashlib",
+    "textwrap", "shlex", "struct", "tempfile", "glob", "fnmatch", "unicodedata",
+    "sqlite3", "html", "urllib", "socket", "subprocess",
+}
+_module_cache = {}
 
 
 
@@ -240,6 +256,36 @@ def check_pi(text):
     return out
 
 
+def _has_attr(mod, attr):
+    """安全白名单模块是否有该属性。返回 True/False；非白名单或导入失败 → None（不确定，不判）。"""
+    if mod not in SAFE_STDLIB:
+        return None
+    if mod not in _module_cache:
+        try:
+            _module_cache[mod] = importlib.import_module(mod)
+        except Exception:
+            _module_cache[mod] = None
+    module = _module_cache[mod]
+    if module is None:
+        return None
+    return hasattr(module, attr)
+
+
+def check_api_exists(text):
+    """API 存在性检查：'os.foobar()' 函数调用形式。只查安全白名单标准库模块，宁漏勿误报。"""
+    out = []
+    for m in API_CALL.finditer(text):
+        mod, attr = m.group(1), m.group(2)
+        if _quoted(m, text):
+            continue
+        exists = _has_attr(mod, attr)
+        if exists is False:
+            out.append(_mk(f"{mod}.{attr}",
+                           f"{mod} 标准库没有 {attr} 这个函数/属性（疑似编造 API）",
+                           f"核实 {mod} 的真实 API"))
+    return out
+
+
 QUOTE_MARKERS = ("文中写", "原文写", "写的是", "写了", "应为", "应改为", "应该为", "而不是", "误写", "写成", "按说", "实际应为")
 
 
@@ -257,7 +303,7 @@ def verify(text):
         return []
     return (check_dates(text) + check_percent(text) + check_sum(text)
             + check_stdlib(text) + check_self_contradiction(text)
-            + check_power(text) + check_pi(text))
+            + check_power(text) + check_pi(text) + check_api_exists(text))
 
 
 if __name__ == "__main__":
