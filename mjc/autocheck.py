@@ -22,7 +22,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from mjc.judge import build_pool
 from mjc import pipeline
 from mjc import autoswitch
-from mjc.paths import LOG_DIR, AUTO_LOG_DIR
+from mjc.paths import LOG_DIR, AUTO_LOG_DIR, TRUST_PATH
 
 # 同 sha（+同 kind）内容 N 小时内去重：读当日审查日志尾 100 行比对（P4.2）
 DEDUPE_H = 6
@@ -219,7 +219,7 @@ def auto_review(content, channel="?", task=None, no_memory=False, kind="message"
             task_text, content, pool,
             screen_judge=screen_j, screen_conf=None,
             use_screen=screen_j is not None, use_cache=False, use_degrade=False,
-            trust_path=None, debate_log_dir=None, log_path=log,
+            trust_path=TRUST_PATH, debate_log_dir=None, log_path=log,
             memory=facts or None, emit=emit,
         )
     except Exception as e:
@@ -253,16 +253,21 @@ def auto_review(content, channel="?", task=None, no_memory=False, kind="message"
                     emit({"kind": "arbitration", **factcheck.summarize(arb_items)})
                 except Exception:
                     pass
-    # 证伪升级：证伪者挑战被 confirmed 且委员会判 pass → 升级为 revise（宁检勿放）
+    # 证伪升级（P4 拆死门）：证伪者挑战 → 委员会判 pass → 升级 revise。
+    # 旧逻辑要求 confirmed（仲裁池空 → 全 unknown → 永不升级）。新规则：
+    #   confirmed → 升级；unknown（仲裁不可用/无定论）→ 也升级（独立跨厂模型的质疑宁检勿放）；
+    #   refuted（仲裁明确否证）→ 不升级（保留原文）。
     fals_confirmed, escalated = [], False
-    if fals_meta and arb_items:
+    if fals_meta:
         spec = fals_meta.get("spec", "")
         outcomes = {a.get("desc", "")[:120]: a.get("outcome")
-                    for a in arb_items if a.get("judge_id") == spec}
+                    for a in (arb_items or []) if a.get("judge_id") == spec}
         for ch in fals_meta.get("challenges") or []:
             ch["outcome"] = outcomes.get((ch.get("desc") or "")[:120], "unknown")
-            if ch["outcome"] == "confirmed":
-                fals_confirmed.append(ch)
+            if ch["outcome"] == "refuted":
+                continue  # 仲裁明确否证 → 不升级
+            # confirmed 或 unknown（仲裁空/无定论）→ 证伪者独立质疑足以触发软 revise
+            fals_confirmed.append(ch)
         if fals_confirmed and final_verdict == "pass":
             final_verdict = "revise"
             escalated = True

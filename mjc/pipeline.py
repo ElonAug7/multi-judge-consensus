@@ -132,7 +132,8 @@ def _note_saving(mechanism, calls, rec=None, note="", seconds=None):
 
 
 def _committee(task, output, pool, mode, use_cache, log_path, debate_log_dir,
-               key_extra=None, emit=None, max_debate_rounds=None):
+               key_extra=None, emit=None, max_debate_rounds=None,
+               trust_path=None, use_trust_weights=False):
     """委员会仲裁（带缓存）：返回 (record, cache_hit, calls)"""
     from .arbiter import ParallelArbiter
     pool_names = sorted(j.name for j in pool)
@@ -143,7 +144,8 @@ def _committee(task, output, pool, mode, use_cache, log_path, debate_log_dir,
             _note_saving("cache_hit", len(pool), hit, "委员会缓存命中（零调用复用）")
             return hit, True, 0
     arb = ParallelArbiter(pool, debate_log_dir=debate_log_dir, emit=emit,
-                         max_debate_rounds=max_debate_rounds if max_debate_rounds is not None else 2)
+                         max_debate_rounds=max_debate_rounds if max_debate_rounds is not None else 2,
+                         use_trust_weights=use_trust_weights, trust_path=trust_path)
     record = arb.review(task, output)  # 不在此传 log_path：统一由本层 _write_log 控制
     if use_cache:
         cache.put(key, record)
@@ -176,7 +178,8 @@ def _accum_usage(rec, st):
 def run_review_once(task, output, pool, screen_judge=None, screen_conf=None,
                     use_screen=True, use_cache=None, use_degrade=None,
                     trust_path=None, debate_log_dir=None, log_path=None,
-                    memory=None, use_verifier=True, emit=None, max_debate_rounds=None):
+                    memory=None, use_verifier=True, emit=None, max_debate_rounds=None,
+                    use_trust_weights=None):
     """
     一次审查（任务+产出+池固定）。详见模块 docstring。
     pool: [Judge,...]（≥2）；screen_judge: 初筛 Judge 或 None（关闭初筛）。
@@ -184,7 +187,7 @@ def run_review_once(task, output, pool, screen_judge=None, screen_conf=None,
     memory: [{text,source,date}] 背景记忆（memctx 产物）→ 注入全体 Judge。
     """
     screen_conf = resolve_screen_conf(screen_conf)
-    if use_cache is None or use_degrade is None:
+    if use_cache is None or use_degrade is None or use_trust_weights is None:
         try:
             from mjc import settings
             eff = settings.effective()
@@ -192,9 +195,12 @@ def run_review_once(task, output, pool, screen_judge=None, screen_conf=None,
                 use_cache = bool(eff.get("cache", True))
             if use_degrade is None:
                 use_degrade = bool(eff.get("degrade", False))
+            if use_trust_weights is None:
+                use_trust_weights = bool((eff.get("consensus") or {}).get("weighted_vote", True))
         except Exception:
             use_cache = DEFAULT_CACHE if use_cache is None else use_cache
             use_degrade = False if use_degrade is None else use_degrade
+            use_trust_weights = True if use_trust_weights is None else use_trust_weights
     stats = {"cache_hit": False, "committee_cached": False, "screened": False,
              "screen_passed": False, "screen_calls": 0, "committee_calls": 0,
              "api_calls": 0, "degraded": None, "escalated": False, "verifier": False}
@@ -345,7 +351,8 @@ def run_review_once(task, output, pool, screen_judge=None, screen_conf=None,
             active = [j for j in pool if j.name != skip]
             rec, hit, calls = _committee(task, output, active, f"deg2:{skip}",
                                          use_cache, None, debate_log_dir, emit=emit,
-                                         max_debate_rounds=max_debate_rounds)
+                                         max_debate_rounds=max_debate_rounds,
+                                         trust_path=trust_path, use_trust_weights=use_trust_weights)
             stats["committee_cached"] = hit
             stats["committee_calls"] += calls
             if rec.get("final") in ("pass", "reject"):
@@ -359,7 +366,8 @@ def run_review_once(task, output, pool, screen_judge=None, screen_conf=None,
     # ---- ③ 委员会（3 Judge 并行；分歧自动辩论 ≤2 轮）----
     rec, hit, calls = _committee(task, output, pool, "full",
                                  use_cache, None, debate_log_dir, emit=emit,
-                                 max_debate_rounds=max_debate_rounds)
+                                 max_debate_rounds=max_debate_rounds,
+                                 trust_path=trust_path, use_trust_weights=use_trust_weights)
     stats["committee_cached"] = hit
     stats["committee_calls"] += calls
     stats["cache_hit"] = stats["committee_cached"] or (stats["screen_calls"] == 0 and stats["screened"])

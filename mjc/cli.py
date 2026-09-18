@@ -363,16 +363,39 @@ def cmd_gate(args):
     except Exception:
         _min_len = 1
     try:
-        code, out = autocheck.auto_review(
-            content, channel=f"gate:{stage}", task=task, kind="code",
-            no_memory=args.no_memory, min_len=_min_len,
-            no_screen=not bool(getattr(args, "screen", False)),
-            arbitrate=not bool(getattr(args, "no_arbitrate", False)),
-            falsifier=not bool(getattr(args, "no_falsifier", False)),
-            emit=lambda ev: live.append(ev["kind"], tid,
-                                        **{k: v for k, v in ev.items() if k not in ("kind", "ts_ms", "at", "task_id")}),
-            task_id=tid,
-        )
+        if stage == "code":
+            # P5 架构转向：代码审查走「单强模型 + 上下文装配」+ 方差压平（N 采样 + 验证）
+            from mjc import context as _ctx
+            try:
+                from mjc import settings as _st2
+                _ns = int((_st2.load().get("consensus") or {}).get("code_n_samples", 3))
+            except Exception:
+                _ns = 3
+            if getattr(args, "stable", False):
+                res = _ctx.review_code_stable(content, task=task, n_samples=_ns)
+            else:
+                res = _ctx.review_code_single(content, task=task)
+            out = {"reviewed": True, "kind": "code", "verdict": res["verdict"],
+                   "api_calls": res["calls"], "model": res["model"],
+                   "latency_s": res.get("latency_s"), "context": res.get("context"),
+                   "samples": res.get("samples"), "candidates": res.get("candidates"),
+                   "verified_n": res.get("verified_n"),
+                   "guarded": [{"desc": (g.get("desc") or "")[:120]} for g in res.get("guarded", [])],
+                   "issues": [{"type": i.get("class", "?"), "judge": res["model"],
+                               "desc": (i.get("desc") or "")[:200], "sug": (i.get("fix") or "")[:150],
+                               "count": i.get("count")}
+                              for i in res.get("issues", [])]}
+        else:
+            code, out = autocheck.auto_review(
+                content, channel=f"gate:{stage}", task=task, kind="code",
+                no_memory=args.no_memory, min_len=_min_len,
+                no_screen=not bool(getattr(args, "screen", False)),
+                arbitrate=not bool(getattr(args, "no_arbitrate", False)),
+                falsifier=not bool(getattr(args, "no_falsifier", False)),
+                emit=lambda ev: live.append(ev["kind"], tid,
+                                            **{k: v for k, v in ev.items() if k not in ("kind", "ts_ms", "at", "task_id")}),
+                task_id=tid,
+            )
     except Exception as e:
         print(json.dumps({"error": f"审查失败: {e}"}, ensure_ascii=False))
         return 1
@@ -594,6 +617,7 @@ def main():
     p_gate.add_argument("--no-screen", action="store_true", help="（兼容保留；交付闸门默认即委员会全量）")
     p_gate.add_argument("--no-arbitrate", action="store_true", help="关闭事实仲裁（默认开启：非 pass 时对事实类意见独立复核）")
     p_gate.add_argument("--no-falsifier", action="store_true", help="关闭证伪者（默认开启：红队找错 + 独立仲裁复核）")
+    p_gate.add_argument("--stable", action="store_true", help="代码审查启用方差压平（N 采样 + LLM 验证；实验性，默认关闭因 LLM 验证对细微语义不可靠）")
     p_gate.set_defaults(fn=cmd_gate)
 
     p_dispose = sub.add_parser("dispose", help="记录审查意见处置（主 agent 逐条答复）→ dispositions.jsonl（WebUI 纠正过程可视化）")

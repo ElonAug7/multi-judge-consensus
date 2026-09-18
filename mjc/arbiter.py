@@ -65,6 +65,26 @@ def detect_blocking_dissent(opinions, guard):
     return hits
 
 
+def trust_weights(trust_data):
+    """judge_id → 准确率权重（agree/reviews）。无数据/无 reviews → 空 dict（退化为纯票型）。"""
+    weights = {}
+    for jid, st in ((trust_data or {}).get("judges") or {}).items():
+        if not isinstance(st, dict):
+            continue
+        try:
+            reviews = int(st.get("reviews", 0))
+        except (TypeError, ValueError):
+            reviews = 0
+        if reviews <= 0:
+            continue
+        try:
+            agree = float(st.get("agree", 0))
+        except (TypeError, ValueError):
+            agree = 0.0
+        weights[jid] = max(0.0, min(1.0, agree / reviews))
+    return weights
+
+
 def append_debate_log(record, log_dir):
     """辩论发生时（debate_rounds>0）把完整记录（含每轮意见）追加到 log_dir/debate-*.jsonl"""
     if not (log_dir and record.get("debate_rounds")):
@@ -110,13 +130,22 @@ def parallel_review(pool, user_task, agent_output, others=None, timeout=120, emi
 
 
 class Arbiter:
-    def __init__(self, pool, max_debate_rounds=2, min_pass=2, debate_log_dir=None, emit=None):
+    def __init__(self, pool, max_debate_rounds=2, min_pass=2, debate_log_dir=None, emit=None,
+                 use_trust_weights=False, trust_path=None):
         self.emit = emit
         self.pool = pool            # [Judge, ...]
         self.max_debate_rounds = max_debate_rounds
         self.min_pass = min_pass    # 通过所需票数
         self.debate_log_dir = debate_log_dir  # 非空 → 辩论记录自动落盘 logs/debate-*.jsonl（P2.3）
         self.dissent_guard = dissent_config()  # P1 异议保护配置
+        self.use_trust_weights = use_trust_weights  # P4：trust 权重接进投票（仅破 need_human 平局）
+        self._trust_data = None
+        if self.use_trust_weights:
+            try:
+                from . import trust
+                self._trust_data = trust.load(trust_path)
+            except Exception:
+                self._trust_data = None
         self.log = []               # 完整辩论记录（仲裁日志）
 
     @staticmethod
@@ -141,6 +170,52 @@ class Arbiter:
         if n - c.get("error", 0) >= 2 and (revise_votes >= 2 or (revise_votes == 1 and pass_votes >= 1)):
             return "revise"
         return "need_human"
+
+    def _decide(self, verdicts, opinions):
+        """按配置路由：use_trust_weights → 加权票型，否则纯票型。"""
+        if self.use_trust_weights and self._trust_data:
+            return Arbiter.decide_weighted(verdicts, self.min_pass, opinions,
+                                           self.dissent_guard, self._trust_data)
+        return self.decide(verdicts, self.min_pass, opinions, self.dissent_guard)
+
+    @staticmethod
+    def decide_weighted(verdicts, min_pass=2, opinions=None, guard=None, trust_data=None):
+        """加权票型裁决（P4：trust.py 接进投票权重）。
+
+        安全边界（宁可保守，不可放松）：
+          - reject / revise（含异议保护触发）是安全决策，加权**绝不**回退为 pass；
+          - pass 已达成 → 保持不变；
+          - 仅当纯票型 = need_human（无清晰多数，常见于含 error 票的退化池）时，
+            才用 trust 权重打破平局。
+        权重 = agree/reviews（冷启动/未记录 → 中性 0.5）；无 trust 数据 → 与 decide 完全等价。
+        """
+        base = Arbiter.decide(verdicts, min_pass, opinions, guard)
+        if base != "need_human":
+            return base
+        if not trust_data:
+            return base
+        weights = trust_weights(trust_data)
+        if not weights:
+            return base
+        ops = opinions or []
+        total = 0.0
+        score = {"pass": 0.0, "reject": 0.0, "revise": 0.0}
+        for i, v in enumerate(verdicts):
+            if v == "error":
+                continue
+            o = ops[i] if i < len(ops) and isinstance(ops[i], dict) else {}
+            w = weights.get(o.get("judge_id"), 0.5)  # 未记录 → 中性
+            score[v] = score.get(v, 0.0) + w
+            total += w
+        if total <= 0:
+            return base
+        frac = {k: score[k] / total for k in ("pass", "reject", "revise")}
+        best = max(frac, key=frac.get)
+        if frac[best] > 0.5:
+            if best == "pass" and detect_blocking_dissent(opinions, guard):
+                return "revise"
+            return best
+        return base
 
     # ---------- 工具 ----------
     def _count(self, verdicts):
@@ -188,7 +263,7 @@ class Arbiter:
                 except Exception:
                     pass
         verdicts = [o.get("verdict", "error") for o in r1]
-        round1_decision = self.decide(verdicts, self.min_pass, r1, self.dissent_guard)  # 单轮基线（P2.5 对比用）
+        round1_decision = self._decide(verdicts, r1)  # 单轮基线（P2.5 对比用）
         round_opinions[1] = r1
         rounds.append({"round": 1, "kind": "independent", "opinions": r1})
 
@@ -223,7 +298,7 @@ class Arbiter:
         reject_votes = c.get("reject", 0)
         revise_votes = c.get("revise", 0)
         dissent_hits = detect_blocking_dissent(r1, self.dissent_guard)
-        final = self.decide(verdicts, self.min_pass, r1, self.dissent_guard)
+        final = self._decide(verdicts, r1)
 
         elapsed = time.time() - start
         record = {
@@ -283,7 +358,7 @@ class ParallelArbiter(Arbiter):
 
         r1 = parallel_review(self.pool, user_task, agent_output, emit=getattr(self, 'emit', None), round_no=1)
         verdicts = [o.get("verdict", "error") for o in r1]
-        round1_decision = self.decide(verdicts, self.min_pass, r1, self.dissent_guard)  # 单轮基线（P2.5 对比用）
+        round1_decision = self._decide(verdicts, r1)  # 单轮基线（P2.5 对比用）
         rounds.append({"round": 1, "kind": "independent", "opinions": r1})
 
         debate_round = 0
@@ -301,7 +376,7 @@ class ParallelArbiter(Arbiter):
         from collections import Counter
         c = Counter(verdicts)
         dissent_hits = detect_blocking_dissent(r1, self.dissent_guard)
-        final = self.decide(verdicts, self.min_pass, r1, self.dissent_guard)
+        final = self._decide(verdicts, r1)
         record = {
             "ts": datetime.datetime.now().isoformat(timespec="seconds"),
             "user_task": user_task[:500],
