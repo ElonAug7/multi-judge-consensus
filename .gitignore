@@ -10,6 +10,9 @@ webui.env
 logs/
 *.log
 
+# ---- 基准运行产物（run_codecase.py 每次重新生成）----
+benchmarks/codecase/case_out/all.json
+
 # ---- 内部开发笔记（不入库）----
 REFACTOR-PLAN.md
 ADVICE-REVIEW.md
