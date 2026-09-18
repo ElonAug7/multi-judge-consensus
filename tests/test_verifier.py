@@ -39,9 +39,10 @@ def run():
     check("正确数字零误报", issues == [])
 
     # ---- 新增：标准库成员 + 自相矛盾（P5 补强）----
-    check("stdlib：pandas 非标准库被抓住",
-          any("pandas is not" in i["description"] for i in verifier.verify("pandas 是 Python 标准库，无需安装。")))
-    check("stdlib：math 是标准库不误报", verifier.verify("math 是 Python 标准库。") == [])
+    if hasattr(sys, "stdlib_module_names"):
+        check("stdlib：pandas 非标准库被抓住",
+              any("pandas is not" in i["description"] for i in verifier.verify("pandas 是 Python 标准库，无需安装。")))
+        check("stdlib：math 是标准库不误报", verifier.verify("math 是 Python 标准库。") == [])
     check("自相矛盾：第4位既9又5被抓住",
           any("both 9 and 5" in i["description"] for i in verifier.verify("圆周率第 4 位是 9，第4位是5。")))
     check("自相矛盾：单值不误报", verifier.verify("圆周率第 4 位小数是 5。") == [])

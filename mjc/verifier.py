@@ -187,21 +187,27 @@ def check_sum(text):
     return out
 
 
+# sys.stdlib_module_names only exists on Python 3.10+; skip the check on older versions
+STDLIB_MODULES = getattr(sys, "stdlib_module_names", None)
+
+
 def check_stdlib(text):
-    """Stdlib membership check: 'X is / is not a Python stdlib'. Looked up via sys.stdlib_module_names."""
+    """Stdlib membership check: 'X is / is not a Python stdlib'. Looked up via sys.stdlib_module_names (Python 3.10+)."""
+    if STDLIB_MODULES is None:
+        return []  # Python < 3.10: no stdlib_module_names, skip the check
     out = []
     for m in STDLIB_CLAIM.finditer(text):
         name = m.group(1)
         if _quoted(m, text):
             continue
-        if name not in sys.stdlib_module_names:
+        if name not in STDLIB_MODULES:
             out.append(_mk(name, f"{name} is not a Python stdlib (third-party, needs pip install), but the text claims it is",
                            f"{name} is not part of the stdlib, install it separately"))
     for m in STDLIB_NEG.finditer(text):
         name = m.group(1)
         if _quoted(m, text):
             continue
-        if name in sys.stdlib_module_names:
+        if name in STDLIB_MODULES:
             out.append(_mk(name, f"{name} is a Python stdlib, but the text claims it is not",
                            f"{name} is part of the stdlib, no install needed"))
     return out
