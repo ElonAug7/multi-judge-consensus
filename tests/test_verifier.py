@@ -45,6 +45,13 @@ def run():
     check("自相矛盾：第4位既9又5被抓住",
           any("既写 9 又写 5" in i["description"] for i in verifier.verify("圆周率第 4 位是 9，第4位是5。")))
     check("自相矛盾：单值不误报", verifier.verify("圆周率第 4 位小数是 5。") == [])
+    # ---- 新增：幂/次方 + π 常数 ----
+    check("幂：2 的 10 次方=1000 被抓住（应 1024）",
+          any("1024" in i["description"] for i in verifier.verify("2 的 10 次方等于 1000。")))
+    check("幂：2 的 10 次方=1024 不误报", verifier.verify("2 的 10 次方等于 1024。") == [])
+    check("π：第4位写 9 被抓住（应 5）",
+          any("π 第4位小数是 5" in i["description"] for i in verifier.verify("圆周率第 4 位小数是 9。")))
+    check("π：第4位写 5 不误报", verifier.verify("圆周率第 4 位小数是 5。") == [])
 
     # ---- 负样本/歧义：必须跳过 ----
     check("缺基数百分比跳过", verifier.verify("成本下降了 25%，效果显著。") == [])

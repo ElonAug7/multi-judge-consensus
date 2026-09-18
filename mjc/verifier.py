@@ -77,6 +77,13 @@ STDLIB_NEG = re.compile(
 # 自相矛盾：'第N位是 A' 与 '第N位是 B'（A≠B）
 DIGIT_CLAIM = re.compile(r"第\s*(\d+)\s*位\s*(?:小数|数字|位)?\s*(?:是|=|为)\s*(\d+)")
 
+# 幂/次方：'2 的 10 次方等于 1000'
+POWER_EXPR = re.compile(r"(\d+(?:\.\d+)?)\s*的\s*(\d+)\s*(?:次方|次幂)\s*(?:等于|=|＝)\s*(\d+(?:\.\d+)?)")
+
+# π 小数位（已知常量，避免依赖 math）
+PI_DECIMALS = "14159265358979323846"
+PI_DIGIT = re.compile(r"(?:圆周率|π|pi)\s*[^。；\n]{0,24}?第\s*(\d+)\s*位\s*(?:小数|数字)?\s*(?:是|=|为)\s*(\d+)")
+
 
 
 def _mk(loc, desc, sug, typ="factual_error"):
@@ -199,6 +206,40 @@ def check_self_contradiction(text):
     return out
 
 
+def check_power(text):
+    """幂/次方检查：'X 的 Y 次方 = Z'。验算 X**Y。"""
+    out = []
+    for m in POWER_EXPR.finditer(text):
+        try:
+            base, exp, claim = float(m.group(1)), int(m.group(2)), float(m.group(3))
+        except ValueError:
+            continue
+        if exp > 64:  # 防超大数溢出
+            continue
+        got = base ** exp
+        if abs(got - claim) > 1e-6 * max(1.0, abs(got)) and not _quoted(m, text):
+            out.append(_mk(m.group(0)[:60], f"{base:g} 的 {exp} 次方 = {got:g}，文中写 {claim:g}",
+                           f"改为 {got:g}"))
+    return out
+
+
+def check_pi(text):
+    """π 常数检查：'π 第N位小数是 D'。对照 π 小数位。"""
+    out = []
+    for m in PI_DIGIT.finditer(text):
+        try:
+            pos, d = int(m.group(1)), int(m.group(2))
+        except ValueError:
+            continue
+        if not (1 <= pos <= len(PI_DECIMALS)):
+            continue
+        actual = PI_DECIMALS[pos - 1]
+        if actual != str(d) and not _quoted(m, text):
+            out.append(_mk(f"第{pos}位", f"π 第{pos}位小数是 {actual}，文中写 {d}",
+                           f"改为 {actual}"))
+    return out
+
+
 QUOTE_MARKERS = ("文中写", "原文写", "写的是", "写了", "应为", "应改为", "应该为", "而不是", "误写", "写成", "按说", "实际应为")
 
 
@@ -215,7 +256,8 @@ def verify(text):
     if not text:
         return []
     return (check_dates(text) + check_percent(text) + check_sum(text)
-            + check_stdlib(text) + check_self_contradiction(text))
+            + check_stdlib(text) + check_self_contradiction(text)
+            + check_power(text) + check_pi(text))
 
 
 if __name__ == "__main__":
