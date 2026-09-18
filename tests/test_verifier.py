@@ -38,6 +38,14 @@ def run():
     issues = verifier.verify("从 100 元涨到 150 元，增长 50%；18+12+20+25=75；8 月 1 日到 8 月 10 日共 9 天。")
     check("正确数字零误报", issues == [])
 
+    # ---- 新增：标准库成员 + 自相矛盾（P5 补强）----
+    check("stdlib：pandas 非标准库被抓住",
+          any("pandas 不是" in i["description"] for i in verifier.verify("pandas 是 Python 标准库，无需安装。")))
+    check("stdlib：math 是标准库不误报", verifier.verify("math 是 Python 标准库。") == [])
+    check("自相矛盾：第4位既9又5被抓住",
+          any("既写 9 又写 5" in i["description"] for i in verifier.verify("圆周率第 4 位是 9，第4位是5。")))
+    check("自相矛盾：单值不误报", verifier.verify("圆周率第 4 位小数是 5。") == [])
+
     # ---- 负样本/歧义：必须跳过 ----
     check("缺基数百分比跳过", verifier.verify("成本下降了 25%，效果显著。") == [])
     check("无算式数字跳过", verifier.verify("共 4 个模块，约 2000 行代码。") == [])

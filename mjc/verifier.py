@@ -7,12 +7,15 @@ MJC · verifier.py — 确定性验证器（P0：快/准/省三角的规则层�
   1. 日期差：'8月31日…9月5日，历时 4 天' / ISO 日期对 + 历时/共/间隔 N 天
   2. 百分比基数：'从 A 降到 B，节省/下降/提升 X%'（自动验算，容差 ±2.5pp）
   3. 显式求和：'18+12+20+25=85' / '= 75'（容差 ±0.01）
+  4. 标准库成员：'pandas 是 Python 标准库'（查 sys.stdlib_module_names，零 LLM）
+  5. 自相矛盾：同一量词出现两个不同值（'第4位是9' vs '第4位是5'）
 
 命中 → 直接产出 revise 裁决（跳过 LLM，全程 0 调用），并附在审查记录里。
 歧义输入（缺基数、跨 2 月无年份、非显式算式）一律跳过——验证器的信誉 > 覆盖率。
 """
 import datetime
 import re
+import sys
 
 MONTH_DAYS = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
 
@@ -64,6 +67,15 @@ DATE_ISO = re.compile(
     r".{0,24}?"
     r"(20\d{2})[-/.](\d{1,2})[-/.](\d{1,2})"
     r"[^。；\n]{0,14}?(?:历时|共|间隔|相差)\s*(\d{1,4})\s*(?:天|日)")
+
+# 标准库成员：'pandas 是 Python 标准库' / 'requests 属于标准库'
+STDLIB_CLAIM = re.compile(
+    r"([a-zA-Z_]\w*)\s*(?:是|属于|为)\s*(?:Python\s*(?:的)?\s*)?(?:标准库|内置模块|内置库|标准模块)")
+STDLIB_NEG = re.compile(
+    r"([a-zA-Z_]\w*)\s*(?:不是|不属于|并非)\s*(?:Python\s*(?:的)?\s*)?(?:标准库|内置模块|内置库|标准模块)")
+
+# 自相矛盾：'第N位是 A' 与 '第N位是 B'（A≠B）
+DIGIT_CLAIM = re.compile(r"第\s*(\d+)\s*位\s*(?:小数|数字|位)?\s*(?:是|=|为)\s*(\d+)")
 
 
 
@@ -152,6 +164,41 @@ def check_sum(text):
     return out
 
 
+def check_stdlib(text):
+    """标准库成员检查：'X 是/不是 Python 标准库'。查 sys.stdlib_module_names。"""
+    out = []
+    for m in STDLIB_CLAIM.finditer(text):
+        name = m.group(1)
+        if _quoted(m, text):
+            continue
+        if name not in sys.stdlib_module_names:
+            out.append(_mk(name, f"{name} 不是 Python 标准库（第三方库，需 pip 安装），文中却称其为标准库",
+                           f"{name} 不属于标准库，需单独安装"))
+    for m in STDLIB_NEG.finditer(text):
+        name = m.group(1)
+        if _quoted(m, text):
+            continue
+        if name in sys.stdlib_module_names:
+            out.append(_mk(name, f"{name} 是 Python 标准库，文中却称其不是",
+                           f"{name} 是标准库，无需安装"))
+    return out
+
+
+def check_self_contradiction(text):
+    """自相矛盾检查：同一量词（第N位）出现两个不同值。矛盾本身就是缺陷，不套 _quoted。"""
+    out = []
+    seen = {}
+    for m in DIGIT_CLAIM.finditer(text):
+        pos, digit = m.group(1), m.group(2)
+        if pos in seen and seen[pos] != digit:
+            out.append(_mk(f"第{pos}位", f"自相矛盾：第{pos}位既写 {seen[pos]} 又写 {digit}",
+                           "统一为一个确定的值", typ="logical_error"))
+            seen[pos] = digit  # 继续跟踪后续
+        else:
+            seen[pos] = digit
+    return out
+
+
 QUOTE_MARKERS = ("文中写", "原文写", "写的是", "写了", "应为", "应改为", "应该为", "而不是", "误写", "写成", "按说", "实际应为")
 
 
@@ -167,7 +214,8 @@ def verify(text):
     """入口：text → issues（全部 certain）。无歧义保证：只返回能 100% 验算的错误。"""
     if not text:
         return []
-    return check_dates(text) + check_percent(text) + check_sum(text)
+    return (check_dates(text) + check_percent(text) + check_sum(text)
+            + check_stdlib(text) + check_self_contradiction(text))
 
 
 if __name__ == "__main__":

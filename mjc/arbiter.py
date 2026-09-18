@@ -179,6 +179,20 @@ class Arbiter:
         return self.decide(verdicts, self.min_pass, opinions, self.dissent_guard)
 
     @staticmethod
+    def _finalize(final, agent_output):
+        """need_human 确定性兜底：verifier 验算命中 → 升级 revise（可验证错误不无谓转人工）。
+        零 LLM 成本、设计上零误报（verifier 只抓 100% 可验算的错误）。"""
+        if final != "need_human":
+            return final
+        try:
+            from mjc import verifier
+            if verifier.verify(agent_output):
+                return "revise"
+        except Exception:
+            pass
+        return final
+
+    @staticmethod
     def decide_weighted(verdicts, min_pass=2, opinions=None, guard=None, trust_data=None):
         """加权票型裁决（P4：trust.py 接进投票权重）。
 
@@ -298,7 +312,7 @@ class Arbiter:
         reject_votes = c.get("reject", 0)
         revise_votes = c.get("revise", 0)
         dissent_hits = detect_blocking_dissent(r1, self.dissent_guard)
-        final = self._decide(verdicts, r1)
+        final = self._finalize(self._decide(verdicts, r1), agent_output)
 
         elapsed = time.time() - start
         record = {
@@ -376,7 +390,7 @@ class ParallelArbiter(Arbiter):
         from collections import Counter
         c = Counter(verdicts)
         dissent_hits = detect_blocking_dissent(r1, self.dissent_guard)
-        final = self._decide(verdicts, r1)
+        final = self._finalize(self._decide(verdicts, r1), agent_output)
         record = {
             "ts": datetime.datetime.now().isoformat(timespec="seconds"),
             "user_task": user_task[:500],
