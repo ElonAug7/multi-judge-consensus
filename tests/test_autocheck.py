@@ -240,7 +240,7 @@ def test_dedupe_same_sha_kind_skips():
 
 
 def test_falsifier_escalation():
-    """证伪者升级：confirmed 挑战将 pass 升级为 revise 并并入 issues；unknown 不升级"""
+    """证伪者升级（P4 拆死门）：confirmed 与 unknown 均升级 revise 并并入 issues；refuted 不升级"""
     tmp = tempfile.mkdtemp(prefix="mjc-auto-")
     _setup(tmp)
     old_f, old_a = ac._falsify, ac._arbitrate
@@ -256,7 +256,7 @@ def test_falsifier_escalation():
         day = datetime.date.today().isoformat()
         entry = json.loads(open(os.path.join(tmp, f"{day}.jsonl"), encoding="utf-8").readline())
         assert any(i.get("judge") == "falsifier" for i in entry["issues"]), entry["issues"]
-        # unknown → 不升级
+        # unknown → 也升级（P4 拆死门：仲裁不可用/无定论时，独立跨厂质疑宁检勿放）
         tmp2 = tempfile.mkdtemp(prefix="mjc-auto-")
         _setup(tmp2)
         ac._falsify = lambda *a, **k: {"spec": "dashscope:qwen-max", "calls": 1,
@@ -265,11 +265,22 @@ def test_falsifier_escalation():
             "items": [{"judge_id": "dashscope:qwen-max", "type": "factual_error", "desc": "挑战Z",
                         "sug": "", "outcome": "unknown", "votes": []}], "calls": 2}
         code2, out2 = auto_review("另一段足够长的内容文本需要被审查确认" * 6, no_memory=True)
-        assert code2 == 0 and out2["verdict"] == "pass", out2
-        assert out2["falsifier"]["escalated"] is False, out2
+        assert code2 == 0 and out2["verdict"] == "revise", out2
+        assert out2["falsifier"]["escalated"] is True, out2
+        # refuted → 不升级（仲裁明确否证，保留原文）
+        tmp3 = tempfile.mkdtemp(prefix="mjc-auto-")
+        _setup(tmp3)
+        ac._falsify = lambda *a, **k: {"spec": "dashscope:qwen-max", "calls": 1,
+            "challenges": [{"type": "factual_error", "desc": "挑战R", "suggestion": ""}]}
+        ac._arbitrate = lambda task, content, issues, timeout=90, max_issues=3: {
+            "items": [{"judge_id": "dashscope:qwen-max", "type": "factual_error", "desc": "挑战R",
+                        "sug": "", "outcome": "refuted", "votes": []}], "calls": 2}
+        code3, out3 = auto_review("第三段足够长的内容文本需要被审查确认" * 6, no_memory=True)
+        assert code3 == 0 and out3["verdict"] == "pass", out3
+        assert out3["falsifier"]["escalated"] is False, out3
     finally:
         ac._falsify, ac._arbitrate = old_f, old_a
-    print("  ✅ 证伪者：confirmed→升级 revise；unknown→保持 pass")
+    print("  ✅ 证伪者：confirmed/unknown→升级 revise；refuted→保持 pass")
 
 
 def main():
