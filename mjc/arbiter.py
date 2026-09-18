@@ -66,7 +66,7 @@ def detect_blocking_dissent(opinions, guard):
 
 
 def trust_weights(trust_data):
-    """judge_id → 准确率权重（agree/reviews）。无数据/无 reviews → 空 dict（退化为纯票型）。"""
+    """judge_id -> accuracy weight (agree/reviews). No data / no reviews -> empty dict (falls back to plain voting)."""
     weights = {}
     for jid, st in ((trust_data or {}).get("judges") or {}).items():
         if not isinstance(st, dict):
@@ -138,7 +138,7 @@ class Arbiter:
         self.min_pass = min_pass    # 通过所需票数
         self.debate_log_dir = debate_log_dir  # 非空 → 辩论记录自动落盘 logs/debate-*.jsonl（P2.3）
         self.dissent_guard = dissent_config()  # P1 异议保护配置
-        self.use_trust_weights = use_trust_weights  # P4：trust 权重接进投票（仅破 need_human 平局）
+        self.use_trust_weights = use_trust_weights  # P4: wire trust weights into voting (breaks need_human ties only)
         self._trust_data = None
         if self.use_trust_weights:
             try:
@@ -172,7 +172,7 @@ class Arbiter:
         return "need_human"
 
     def _decide(self, verdicts, opinions):
-        """按配置路由：use_trust_weights → 加权票型，否则纯票型。"""
+        """Route by config: use_trust_weights -> weighted vote, otherwise plain vote."""
         if self.use_trust_weights and self._trust_data:
             return Arbiter.decide_weighted(verdicts, self.min_pass, opinions,
                                            self.dissent_guard, self._trust_data)
@@ -180,8 +180,8 @@ class Arbiter:
 
     @staticmethod
     def _finalize(final, agent_output):
-        """need_human 确定性兜底：verifier 验算命中 → 升级 revise（可验证错误不无谓转人工）。
-        零 LLM 成本、设计上零误报（verifier 只抓 100% 可验算的错误）。"""
+        """need_human deterministic tiebreak: verifier hit -> upgrade to revise (verifiable error should not be passed to human needlessly).
+        Zero LLM cost, zero false-positive by design (the verifier only catches 100%-verifiable errors)."""
         if final != "need_human":
             return final
         try:
@@ -194,14 +194,14 @@ class Arbiter:
 
     @staticmethod
     def decide_weighted(verdicts, min_pass=2, opinions=None, guard=None, trust_data=None):
-        """加权票型裁决（P4：trust.py 接进投票权重）。
+        """Weighted vote decision (P4: wire trust.py into the vote weight).
 
-        安全边界（宁可保守，不可放松）：
-          - reject / revise（含异议保护触发）是安全决策，加权**绝不**回退为 pass；
-          - pass 已达成 → 保持不变；
-          - 仅当纯票型 = need_human（无清晰多数，常见于含 error 票的退化池）时，
-            才用 trust 权重打破平局。
-        权重 = agree/reviews（冷启动/未记录 → 中性 0.5）；无 trust 数据 → 与 decide 完全等价。
+        Safety boundary (conservative, never relax):
+          - reject / revise (including dissent-guard triggered) are safety decisions; weighting must NOT revert them to pass;
+          - pass already reached -> keep unchanged;
+          - only when the plain vote is need_human (no clear majority, common in degraded pools with error votes),
+            use trust weights to break the tie.
+        Weight = agree/reviews (cold start / unrecorded -> neutral 0.5); no trust data -> exactly equivalent to decide.
         """
         base = Arbiter.decide(verdicts, min_pass, opinions, guard)
         if base != "need_human":

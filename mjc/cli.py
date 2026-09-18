@@ -364,7 +364,7 @@ def cmd_gate(args):
         _min_len = 1
     try:
         if stage == "code":
-            # P5 架构转向：代码审查走「单强模型 + 上下文装配」+ 方差压平（N 采样 + 验证）
+            # P5 pivot: code review via single strong model + context assembly, plus variance flattening (N samples + verification)
             from mjc import context as _ctx
             try:
                 from mjc import settings as _st2

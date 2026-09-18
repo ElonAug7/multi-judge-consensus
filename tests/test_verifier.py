@@ -40,21 +40,21 @@ def run():
 
     # ---- 新增：标准库成员 + 自相矛盾（P5 补强）----
     check("stdlib：pandas 非标准库被抓住",
-          any("pandas 不是" in i["description"] for i in verifier.verify("pandas 是 Python 标准库，无需安装。")))
+          any("pandas is not" in i["description"] for i in verifier.verify("pandas 是 Python 标准库，无需安装。")))
     check("stdlib：math 是标准库不误报", verifier.verify("math 是 Python 标准库。") == [])
     check("自相矛盾：第4位既9又5被抓住",
-          any("既写 9 又写 5" in i["description"] for i in verifier.verify("圆周率第 4 位是 9，第4位是5。")))
+          any("both 9 and 5" in i["description"] for i in verifier.verify("圆周率第 4 位是 9，第4位是5。")))
     check("自相矛盾：单值不误报", verifier.verify("圆周率第 4 位小数是 5。") == [])
     # ---- 新增：幂/次方 + π 常数 ----
     check("幂：2 的 10 次方=1000 被抓住（应 1024）",
           any("1024" in i["description"] for i in verifier.verify("2 的 10 次方等于 1000。")))
     check("幂：2 的 10 次方=1024 不误报", verifier.verify("2 的 10 次方等于 1024。") == [])
     check("π：第4位写 9 被抓住（应 5）",
-          any("π 第4位小数是 5" in i["description"] for i in verifier.verify("圆周率第 4 位小数是 9。")))
+          any("pi's 4th decimal is 5" in i["description"] for i in verifier.verify("圆周率第 4 位小数是 9。")))
     check("π：第4位写 5 不误报", verifier.verify("圆周率第 4 位小数是 5。") == [])
     # ---- 新增：API 存在性 ----
     check("API：os.foobar() 编造被抓住",
-          any("没有 foobar" in i["description"] for i in verifier.verify("使用 os.foobar() 读取文件。")))
+          any("no foobar" in i["description"] for i in verifier.verify("使用 os.foobar() 读取文件。")))
     check("API：os.listdir() 不误报", verifier.verify("使用 os.listdir() 列目录。") == [])
     check("API：json.loads() 不误报", verifier.verify("使用 json.loads(s) 解析。") == [])
 

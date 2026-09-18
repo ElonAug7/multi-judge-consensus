@@ -1,19 +1,24 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-MJC · context.py — 上下文装配器（P5：架构从「多模型投票」转向「单强模型 + 上下文」）
+MJC · context.py — context assembler (P5: shift from "multi-model voting" to "single strong model + context")
 
-学习结论（codecase A–F 臂，2026-09-18，实测）：
-  - 多模型委员会/证伪者/仲裁对语义逻辑缺陷是**负资产**：加成本不加召回（13 调用 / 6/12）。
-  - 召回天花板由「上下文」决定：手写规格 12/12，纯读代码 6/12，运行输出与之**互补**。
-  - 单模型 + 正确上下文 = 2× 召回、1/13 调用、1/25 延迟。
+Findings (codecase arms A-F, 2026-09-18, measured):
+  - Multi-model committee / falsifier / arbitration is a *net negative* for semantic-logic
+    defects: adds cost without recall (13 calls / 6/12).
+  - The recall ceiling is set by *context*: hand-written spec 12/12, code-only reading 6/12,
+    runtime output complements it.
+  - Single model + correct context = 2x recall, 1/13 calls, 1/25 latency.
 
-本模块把**可自动采集**的上下文装配成审阅提示，交给**单强模型**深挖，作为代码审查主路径：
-  - 自动采集：py_compile 编译状态（确定性、零成本）+ 运行输出（demo / 测试，若可跑）。
-  - 提示词显式枚举两类缺陷：A 静态矛盾（注释/doc/常量 vs 实现）、B 运行时行为异常。
+This module assembles *auto-collectable* context into a review prompt, feeds it to a *single
+strong model*, and uses that as the primary code-review path:
+  - Auto-collect: py_compile status (deterministic, zero cost) + runtime output (demo / tests, if runnable).
+  - The prompt explicitly enumerates two defect classes: A static contradiction (comment/doc/
+    constant vs implementation), B runtime behavior anomaly.
 
-安全说明：assemble_code_context 只对传入代码做 py_compile（无副作用）；
-运行采集仅在「代码含 `if __name__ == "__main__"`」或调用方显式传 run_cmd 时执行，且限时。
+Safety note: assemble_code_context only runs py_compile on the given code (no side effects).
+Runtime collection runs only when the code contains `if __name__ == "__main__"` or the caller
+passes run_cmd explicitly, and it is time-limited.
 """
 import json
 import os
@@ -24,21 +29,24 @@ import sys
 import tempfile
 import time
 
-# 默认代码审查单强模型（settings.consensus.code_review_model 可覆盖）
+# Default single strong model for code review (overridable via settings.consensus.code_review_model)
 DEFAULT_REVIEW_MODEL = "glm:glm-4-plus"
 
-# 沙箱运行采集限制
-SANDBOX_MEM_KB = 512 * 1024   # 512 MB 虚拟内存上限
-SANDBOX_CPU_S = 8             # CPU 时间上限（秒）
-SANDBOX_WALL_S = 12           # 墙钟超时（秒）
+# Sandboxed runtime collection limits
+SANDBOX_MEM_KB = 512 * 1024   # 512 MB virtual-memory cap
+SANDBOX_CPU_S = 8             # CPU-time cap (seconds)
+SANDBOX_WALL_S = 12           # wall-clock timeout (seconds)
 
 CODE_REVIEW_TASK = (
-    "审查这段代码，找出其中的缺陷（bug）。请**同时**排查两类问题，缺一不可：\n"
-    "【类 A：静态矛盾】注释 / docstring / 常量声明 与 代码实现不一致——例如注释写「满 200 元免运费」但常量是 199、"
-    "docstring 写「按折后金额计税」但实现用折前小计、注释写「满 5 件」但常量是 10、状态判断条件自相矛盾恒为假等。"
-    "逐条比对文档口径与实现。\n"
-    "【类 B：运行时行为异常】结合下方运行输出，找出暴露的行为错误——例如退款金额超过实付、"
-    "已支付订单发货失败、送达日期与承诺时效不符、排序方向与语义相反等。"
+    "Review this code and find defects (bugs). Check BOTH of the following classes, both required:\n"
+    "[Class A: static contradiction] comment / docstring / constant declaration vs implementation "
+    "mismatch — e.g. comment says 'free shipping over 200' but the constant is 199, docstring says "
+    "'tax on the discounted amount' but the code uses the pre-discount subtotal, comment says '5 items' "
+    "but the constant is 10, a condition that is self-contradictory and always false, etc. "
+    "Compare each documented rule against the implementation.\n"
+    "[Class B: runtime behavior anomaly] given the runtime output below, find behavior bugs — e.g. "
+    "refund exceeds amount paid, a paid order fails to ship, delivery date contradicts the promised "
+    "lead time, sort direction opposite to the semantics, etc."
 )
 
 
@@ -51,7 +59,7 @@ def _run(cmd, timeout=180, cwd=None):
 
 
 def _status_of(rc, out):
-    """把运行结果归一为状态标签：ok / exit_N / timeout / oom / error。"""
+    """Normalize a run result to a status label: ok / exit_N / timeout / oom / error."""
     if rc == 124:
         return "timeout"
     if rc is None:
@@ -63,11 +71,12 @@ def _status_of(rc, out):
 
 
 def run_sandboxed(script_path, cwd, wall_s=SANDBOX_WALL_S, mem_kb=SANDBOX_MEM_KB):
-    """在沙箱里跑脚本，捕获 stdout+stderr。返回 (status, output)。
+    """Run a script in a sandbox, capturing stdout+stderr. Returns (status, output).
 
-    优先 bwrap（bubblewrap，零配置、无需 root）：网络隔离(--unshare-net)、PID 隔离、
-    只读根文件系统(--ro-bind / /)、可写临时目录、ulimit 内存/CPU 上限、wall 超时。
-    无 bwrap 时回退 timeout + 直接运行（无内存/网络隔离，降级可用）。
+    Prefers bwrap (bubblewrap: zero-config, no root) with network isolation (--unshare-net),
+    PID isolation, a read-only root (--ro-bind / /), a writable temp dir, ulimit memory/CPU caps,
+    and a wall-clock timeout. Falls back to `timeout` + direct run when bwrap is absent
+    (no memory/network isolation, degraded but usable).
     """
     bwrap = shutil.which("bwrap")
     if bwrap:
@@ -84,7 +93,7 @@ def run_sandboxed(script_path, cwd, wall_s=SANDBOX_WALL_S, mem_kb=SANDBOX_MEM_KB
 
 
 def assemble_code_context(code_text, run_cmd=None, timeout=180):
-    """装配可自动采集的上下文。返回 {compile_status, compile_detail, runtime_status, runtime_output}。"""
+    """Assemble auto-collectable context. Returns {compile_status, compile_detail, runtime_status, runtime_output}."""
     ctx = {"compile_status": "unknown", "compile_detail": "",
            "runtime_status": "skipped", "runtime_output": ""}
     tmp = tempfile.mkdtemp(prefix="mjc_ctx_")
@@ -95,11 +104,11 @@ def assemble_code_context(code_text, run_cmd=None, timeout=180):
     except Exception as e:
         ctx["compile_detail"] = str(e)[:200]
         return ctx
-    # 确定性校验：py_compile（零 LLM 成本，无副作用）
+    # Deterministic check: py_compile (zero LLM cost, no side effects)
     rc, out = _run([sys.executable, "-m", "py_compile", src], timeout=timeout)
     ctx["compile_status"] = "pass" if rc == 0 else "fail"
     ctx["compile_detail"] = (out or "")[:2000]
-    # 运行采集：显式 run_cmd 优先，否则「含 __main__」才自动跑（沙箱内）
+    # Runtime collection: explicit run_cmd wins, else auto-run only if the code has __main__ (in sandbox)
     if run_cmd:
         rc, out = _run(run_cmd, timeout=timeout, cwd=tmp)
         ctx["runtime_status"] = _status_of(rc, out)
@@ -112,26 +121,26 @@ def assemble_code_context(code_text, run_cmd=None, timeout=180):
 
 
 def build_code_review_prompt(task, code_text, ctx):
-    """组装审阅提示：任务 + 代码 + 自动上下文 + 输出约束。"""
+    """Assemble the review prompt: task + code + auto context + output constraints."""
     parts = [task or CODE_REVIEW_TASK]
-    parts.append("【代码】\n" + (code_text or "")[:60000])
+    parts.append("【Code】\n" + (code_text or "")[:60000])
     if ctx.get("compile_status") != "unknown":
-        line = "【编译状态】" + ctx["compile_status"]
+        line = "【Compile status】" + ctx["compile_status"]
         if ctx.get("compile_detail"):
             line += "\n" + ctx["compile_detail"][:1500]
         parts.append(line)
     if ctx.get("runtime_status") not in ("skipped", "unknown") and ctx.get("runtime_output"):
-        parts.append("【运行输出】\n" + ctx["runtime_output"])
-    parts.append("输出严格 JSON（不要 markdown 代码块）："
-                 "{\"issues\":[{\"func\":\"函数名\",\"class\":\"A|B\",\"desc\":\"缺陷描述\",\"fix\":\"正确行为\"}]}"
-                 "只列有把握的，按严重程度排序；没有则 issues 为空数组。")
+        parts.append("【Runtime output】\n" + ctx["runtime_output"])
+    parts.append("Output strict JSON (no markdown code fence): "
+                 "{\"issues\":[{\"func\":\"function name\",\"class\":\"A|B\",\"desc\":\"description\",\"fix\":\"correct behavior\"}]}"
+                 "Only list what you are confident about, ordered by severity; empty issues array if none.")
     return "\n\n".join(parts)
 
 
 def review_code_single(code_text, task=None, model=None, run_cmd=None, timeout=300):
-    """单强模型 + 上下文装配 的代码审查主路径（替代多模型委员会）。
+    """Single strong model + context assembly, the primary code-review path (replaces the committee).
 
-    返回 {verdict, issues, model, calls, latency_s, context, raw}。不抛出。
+    Returns {verdict, issues, model, calls, latency_s, context, raw}. Does not raise.
     """
     from mjc import providers
     from mjc.judge import extract_json
@@ -162,14 +171,14 @@ def review_code_single(code_text, task=None, model=None, run_cmd=None, timeout=3
 
 
 def _extract_issues(parsed):
-    """从解析后的 JSON 里抽取有效 issues（过滤空 desc）。"""
+    """Extract valid issues from parsed JSON (drop empty desc)."""
     if not parsed:
         return []
     return [i for i in (parsed.get("issues") or [])
             if isinstance(i, dict) and (i.get("desc") or "").strip()]
 
 
-# ---- 除零假阳性过滤（轻量补丁）：LLM 常读不懂三元/判零保护，误报除零 ----
+# ---- divide-by-zero false-positive filter (lightweight patch): LLM often misreads ternary/zero guards ----
 DIV_ZERO_HINTS = ("除零", "除 0", "除数为零", "除以零", "division by zero", "divide by zero",
                   "zerodivisionerror", "divisionbyzero", "除以 0")
 
@@ -179,7 +188,7 @@ _GUARD = re.compile(r"if\s+\w+\s+else\b|if\s+not\s+\w+\s*:|except\s+ZeroDivision
 
 
 def _all_divisions_guarded(code_text):
-    """代码里的除法是否都带保护（三元/判零/try-except/或兜底）。无除法 → False。"""
+    """Whether every division in the code is guarded (ternary / zero-check / try-except / or-fallback). No division -> False."""
     lines = code_text.splitlines()
     idxs = [i for i, l in enumerate(lines) if _DIV.search(l)]
     if not idxs:
@@ -192,8 +201,8 @@ def _all_divisions_guarded(code_text):
 
 
 def _filter_guarded(issues, code_text):
-    """压假阳性：把「除零类」意见中、代码里除法均带保护的条目标记为 guarded。
-    默认剔除（宁漏勿误报），保留原始报告供审计。返回 (kept, guarded)。"""
+    """Suppress false positives: mark divide-by-zero claims whose divisions are all guarded as `guarded`.
+    Dropped by default (prefer miss over false-positive); the original report is kept for audit. Returns (kept, guarded)."""
     kept, guarded = [], []
     for it in issues:
         desc = (it.get("desc") or "") + " " + (it.get("fix") or "")
@@ -206,7 +215,7 @@ def _filter_guarded(issues, code_text):
 
 
 def _sample_issues(prompt, model, timeout=300, temperature=0.2):
-    """单次采样：跑一次 chat，返回 issues 列表（失败→[]）。"""
+    """One sample: run a chat once, return the issues list (failure -> [])."""
     from mjc import providers
     from mjc.judge import extract_json
     prov, _, mdl = (model or DEFAULT_REVIEW_MODEL).partition(":")
@@ -218,23 +227,26 @@ def _sample_issues(prompt, model, timeout=300, temperature=0.2):
     return _extract_issues(extract_json(raw))
 
 
-VERIFY_PROMPT = ("你是代码审查复核员，独立判断下面这条「疑似缺陷」是否**真实存在**于代码中（verdict=yes 表示真缺陷，no 表示误报）。\n"
-                 "疑似缺陷（函数/位置）：{func}\n问题描述：{desc}\n"
-                 "请逐字核对代码，特别注意：是否有防御代码（if/else、三元保护、try/except）使该问题实际不会触发？\n"
-                 "verdict=yes：能引用**具体代码行**证明缺陷真实存在；verdict=no：是误报（说明原因）。拿不准填 no（宁漏勿误报）。\n"
-                 "输出严格 JSON：{{\"verdict\":\"yes|no\",\"evidence\":\"引用的代码行\",\"reason\":\"一句话\"}}。\n"
-                 "【代码】\n{code}")
+VERIFY_PROMPT = ("You are a code review verifier. Independently judge whether the following 'suspected defect' "
+                 "actually exists in the code (verdict=yes means a real defect, no means a false positive).\n"
+                 "Suspected defect (function/location): {func}\nDescription: {desc}\n"
+                 "Read the code carefully. In particular: is there any guard (if/else, ternary, try/except) "
+                 "that makes this issue actually not trigger?\n"
+                 "verdict=yes: cite the specific code line proving the defect is real; verdict=no: it is a false "
+                 "positive (explain why). When unsure, answer no (prefer miss over false-positive).\n"
+                 "Output strict JSON: {{\"verdict\":\"yes|no\",\"evidence\":\"cited code line\",\"reason\":\"one sentence\"}}.\n"
+                 "【Code】\n{code}")
 
 
 def _verify_issue(code_text, issue, model=None, timeout=120):
-    """轻量验证：判断某条疑似缺陷是否真实存在。返回 bool（yes=True）。失败/异常→False（宁漏勿误报）。"""
+    """Lightweight verification: judge whether a suspected defect is real. Returns bool (yes=True). Failure/exception -> False (prefer miss)."""
     from mjc import providers
     from mjc.judge import extract_json
     func = (issue.get("func") or "").strip()
     desc = (issue.get("desc") or "").strip()
     if not desc:
         return False
-    # 确定性预筛：函数名在代码里根本不存在 → 直接否（零调用，拦截最明显的幻觉）
+    # Deterministic pre-filter: function name absent from the code -> directly no (zero calls, blocks the clearest hallucinations)
     if func and func not in code_text:
         return False
     model = model or DEFAULT_REVIEW_MODEL
@@ -250,10 +262,10 @@ def _verify_issue(code_text, issue, model=None, timeout=120):
 
 
 def review_code_stable(code_text, task=None, model=None, run_cmd=None, n_samples=3, timeout=300):
-    """压平单模型方差：N 次低温采样 → 去重合并候选 → 逐条独立验证 → 只留验证通过。
+    """Flatten single-model variance: N low-temperature samples -> dedupe candidates -> per-item verification -> keep verified only.
 
-    上下文只装配一次；发现阶段 N 次采样（低温 0.2），验证阶段逐条 yes/no（温度 0）。
-    返回 {verdict, issues, model, calls, latency_s, context, samples, candidates, verified_n}。不抛出。
+    Context is assembled once; discovery stage samples N times (temp 0.2), verification stage does per-item
+    yes/no (temp 0). Returns {verdict, issues, model, calls, latency_s, context, samples, candidates, verified_n}. Does not raise.
     """
     n = max(1, int(n_samples or 3))
     t0 = time.time()
@@ -265,7 +277,7 @@ def review_code_stable(code_text, task=None, model=None, run_cmd=None, n_samples
         except Exception:
             model = DEFAULT_REVIEW_MODEL
     prompt = build_code_review_prompt(task, code_text, ctx)
-    # 1) N 次发现
+    # 1) N discovery samples
     merged = {}
     for _ in range(n):
         for it in _sample_issues(prompt, model, timeout=timeout, temperature=0.2):
@@ -278,7 +290,7 @@ def review_code_stable(code_text, task=None, model=None, run_cmd=None, n_samples
                 merged[key] = {"func": func, "class": it.get("class"), "desc": desc,
                                "fix": (it.get("fix") or "").strip(), "count": 0}
             merged[key]["count"] += 1
-    # 2) 逐条验证（同描述只验一次）+ 同函数去重（同一函数的多个意见合并为一个）
+    # 2) per-item verification (verify once per description) + dedupe by function (merge same-function opinions)
     verified = []
     seen_func = set()
     for cand in sorted(merged.values(), key=lambda c: -c["count"]):
@@ -286,7 +298,7 @@ def review_code_stable(code_text, task=None, model=None, run_cmd=None, n_samples
             cand["verified"] = True
             func = cand.get("func") or ""
             if func and func in seen_func:
-                continue  # 同函数去重（避免同一缺陷多种措辞重复列出）
+                continue  # dedupe by function (avoid listing the same defect with different wording)
             if func:
                 seen_func.add(func)
             verified.append(cand)

@@ -7,11 +7,11 @@ MJC · verifier.py — 确定性验证器（P0：快/准/省三角的规则层�
   1. 日期差：'8月31日…9月5日，历时 4 天' / ISO 日期对 + 历时/共/间隔 N 天
   2. 百分比基数：'从 A 降到 B，节省/下降/提升 X%'（自动验算，容差 ±2.5pp）
   3. 显式求和：'18+12+20+25=85' / '= 75'（容差 ±0.01）
-  4. 标准库成员：'pandas 是 Python 标准库'（查 sys.stdlib_module_names，零 LLM）
-  5. 自相矛盾：同一量词出现两个不同值（'第4位是9' vs '第4位是5'）
-  6. 幂/次方：'2 的 10 次方 = 1000'（验算 X**Y）
-  7. π 常数：'π 第N位小数是 D'（对照 π 小数位）
-  8. API 存在性：'os.foobar()'（查安全白名单模块的 hasattr）
+  4. stdlib membership: 'pandas is a Python stdlib' (checked via sys.stdlib_module_names, zero LLM)
+  5. self-contradiction: same quantity stated as two different values ('4th digit is 9' vs '4th digit is 5')
+  6. power/exponent: '2 to the 10th power = 1000' (recompute X**Y)
+  7. pi constant: 'the Nth decimal of pi is D' (compare against pi's decimals)
+  8. API existence: 'os.foobar()' (hasattr on safe-whitelist modules)
 
 命中 → 直接产出 revise 裁决（跳过 LLM，全程 0 调用），并附在审查记录里。
 歧义输入（缺基数、跨 2 月无年份、非显式算式）一律跳过——验证器的信誉 > 覆盖率。
@@ -72,23 +72,23 @@ DATE_ISO = re.compile(
     r"(20\d{2})[-/.](\d{1,2})[-/.](\d{1,2})"
     r"[^。；\n]{0,14}?(?:历时|共|间隔|相差)\s*(\d{1,4})\s*(?:天|日)")
 
-# 标准库成员：'pandas 是 Python 标准库' / 'requests 属于标准库'
+# stdlib membership: 'pandas is a Python stdlib' / 'requests belongs to the stdlib'
 STDLIB_CLAIM = re.compile(
     r"([a-zA-Z_]\w*)\s*(?:是|属于|为)\s*(?:Python\s*(?:的)?\s*)?(?:标准库|内置模块|内置库|标准模块)")
 STDLIB_NEG = re.compile(
     r"([a-zA-Z_]\w*)\s*(?:不是|不属于|并非)\s*(?:Python\s*(?:的)?\s*)?(?:标准库|内置模块|内置库|标准模块)")
 
-# 自相矛盾：'第N位是 A' 与 '第N位是 B'（A≠B）
+# self-contradiction: 'Nth digit is A' vs 'Nth digit is B' (A != B)
 DIGIT_CLAIM = re.compile(r"第\s*(\d+)\s*位\s*(?:小数|数字|位)?\s*(?:是|=|为)\s*(\d+)")
 
-# 幂/次方：'2 的 10 次方等于 1000'
+# power/exponent: '2 to the 10th power equals 1000'
 POWER_EXPR = re.compile(r"(\d+(?:\.\d+)?)\s*的\s*(\d+)\s*(?:次方|次幂)\s*(?:等于|=|＝)\s*(\d+(?:\.\d+)?)")
 
-# π 小数位（已知常量，避免依赖 math）
+# decimals of pi (known constant, avoid depending on math)
 PI_DECIMALS = "14159265358979323846"
 PI_DIGIT = re.compile(r"(?:圆周率|π|pi)\s*[^。；\n]{0,24}?第\s*(\d+)\s*位\s*(?:小数|数字)?\s*(?:是|=|为)\s*(\d+)")
 
-# API 存在性：'os.foobar()' 函数调用形式（安全白名单模块才查，避免导入副作用）
+# API existence: 'os.foobar()' call form (only safe-whitelist modules, avoid import side effects)
 API_CALL = re.compile(r"([a-z_]\w*)\.([a-zA-Z_]\w*)\s*\(")
 SAFE_STDLIB = {
     "os", "sys", "re", "json", "math", "datetime", "time", "random", "string",
@@ -188,59 +188,59 @@ def check_sum(text):
 
 
 def check_stdlib(text):
-    """标准库成员检查：'X 是/不是 Python 标准库'。查 sys.stdlib_module_names。"""
+    """Stdlib membership check: 'X is / is not a Python stdlib'. Looked up via sys.stdlib_module_names."""
     out = []
     for m in STDLIB_CLAIM.finditer(text):
         name = m.group(1)
         if _quoted(m, text):
             continue
         if name not in sys.stdlib_module_names:
-            out.append(_mk(name, f"{name} 不是 Python 标准库（第三方库，需 pip 安装），文中却称其为标准库",
-                           f"{name} 不属于标准库，需单独安装"))
+            out.append(_mk(name, f"{name} is not a Python stdlib (third-party, needs pip install), but the text claims it is",
+                           f"{name} is not part of the stdlib, install it separately"))
     for m in STDLIB_NEG.finditer(text):
         name = m.group(1)
         if _quoted(m, text):
             continue
         if name in sys.stdlib_module_names:
-            out.append(_mk(name, f"{name} 是 Python 标准库，文中却称其不是",
-                           f"{name} 是标准库，无需安装"))
+            out.append(_mk(name, f"{name} is a Python stdlib, but the text claims it is not",
+                           f"{name} is part of the stdlib, no install needed"))
     return out
 
 
 def check_self_contradiction(text):
-    """自相矛盾检查：同一量词（第N位）出现两个不同值。矛盾本身就是缺陷，不套 _quoted。"""
+    """Self-contradiction check: the same quantity (Nth digit) stated as two different values. The contradiction itself is the defect, so _quoted is not applied."""
     out = []
     seen = {}
     for m in DIGIT_CLAIM.finditer(text):
         pos, digit = m.group(1), m.group(2)
         if pos in seen and seen[pos] != digit:
-            out.append(_mk(f"第{pos}位", f"自相矛盾：第{pos}位既写 {seen[pos]} 又写 {digit}",
-                           "统一为一个确定的值", typ="logical_error"))
-            seen[pos] = digit  # 继续跟踪后续
+            out.append(_mk(f"digit {pos}", f"self-contradiction: digit {pos} is stated as both {seen[pos]} and {digit}",
+                           "unify to a single definite value", typ="logical_error"))
+            seen[pos] = digit  # keep tracking subsequent mentions
         else:
             seen[pos] = digit
     return out
 
 
 def check_power(text):
-    """幂/次方检查：'X 的 Y 次方 = Z'。验算 X**Y。"""
+    """Power/exponent check: 'X to the Yth power = Z'. Recompute X**Y."""
     out = []
     for m in POWER_EXPR.finditer(text):
         try:
             base, exp, claim = float(m.group(1)), int(m.group(2)), float(m.group(3))
         except ValueError:
             continue
-        if exp > 64:  # 防超大数溢出
+        if exp > 64:  # avoid overflow on huge exponents
             continue
         got = base ** exp
         if abs(got - claim) > 1e-6 * max(1.0, abs(got)) and not _quoted(m, text):
-            out.append(_mk(m.group(0)[:60], f"{base:g} 的 {exp} 次方 = {got:g}，文中写 {claim:g}",
-                           f"改为 {got:g}"))
+            out.append(_mk(m.group(0)[:60], f"{base:g} to the {exp}th power = {got:g}, but the text says {claim:g}",
+                           f"change to {got:g}"))
     return out
 
 
 def check_pi(text):
-    """π 常数检查：'π 第N位小数是 D'。对照 π 小数位。"""
+    """Pi constant check: 'the Nth decimal of pi is D'. Compare against pi's decimals."""
     out = []
     for m in PI_DIGIT.finditer(text):
         try:
@@ -251,13 +251,13 @@ def check_pi(text):
             continue
         actual = PI_DECIMALS[pos - 1]
         if actual != str(d) and not _quoted(m, text):
-            out.append(_mk(f"第{pos}位", f"π 第{pos}位小数是 {actual}，文中写 {d}",
-                           f"改为 {actual}"))
+            out.append(_mk(f"digit {pos}", f"pi's {pos}th decimal is {actual}, but the text says {d}",
+                           f"change to {actual}"))
     return out
 
 
 def _has_attr(mod, attr):
-    """安全白名单模块是否有该属性。返回 True/False；非白名单或导入失败 → None（不确定，不判）。"""
+    """Whether a safe-whitelist module has this attribute. Returns True/False; non-whitelist or import-fail -> None (unknown, no verdict)."""
     if mod not in SAFE_STDLIB:
         return None
     if mod not in _module_cache:
@@ -272,7 +272,7 @@ def _has_attr(mod, attr):
 
 
 def check_api_exists(text):
-    """API 存在性检查：'os.foobar()' 函数调用形式。只查安全白名单标准库模块，宁漏勿误报。"""
+    """API existence check: 'os.foobar()' call form. Only checks safe-whitelist stdlib modules, prefer miss over false-positive."""
     out = []
     for m in API_CALL.finditer(text):
         mod, attr = m.group(1), m.group(2)
@@ -281,8 +281,8 @@ def check_api_exists(text):
         exists = _has_attr(mod, attr)
         if exists is False:
             out.append(_mk(f"{mod}.{attr}",
-                           f"{mod} 标准库没有 {attr} 这个函数/属性（疑似编造 API）",
-                           f"核实 {mod} 的真实 API"))
+                           f"{mod} stdlib has no {attr} function/attribute (suspected fabricated API)",
+                           f"verify {mod}'s real API"))
     return out
 
 

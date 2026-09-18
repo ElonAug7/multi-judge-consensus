@@ -114,11 +114,11 @@ DEFAULT = {
     "consensus": {"dissent_guard": {"enabled": True,
                                      "blocking_types": ["factual_error", "hallucination", "logical_error"],
                                      "min_conf": 0.0},
-                  # P4：trust 权重接进投票（仅破 need_human 平局，绝不放松 reject/revise）
+                  # P4: wire trust weights into voting (breaks need_human ties only, never relaxes reject/revise)
                   "weighted_vote": True,
-                  # P5：代码审查单强模型（上下文装配主路径），替代多模型委员会
+                  # P5: single strong model for code review (context-assembly primary path), replaces the committee
                   "code_review_model": "glm:glm-4-plus",
-                  # P5：代码审查方差压平——N 次采样 + 验证（默认 3）
+                  # P5: code-review variance flattening — N samples + verification (default 3)
                   "code_n_samples": 3},
     "key_status": {},
 }

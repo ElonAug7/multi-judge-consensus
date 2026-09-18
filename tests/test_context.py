@@ -48,7 +48,7 @@ def run():
     ctx = assemble_code_context(RUNNABLE, run_cmd=None)
     prompt = build_code_review_prompt(CODE_REVIEW_TASK, RUNNABLE, ctx)
     check("提示含代码", RUNNABLE.strip() in prompt)
-    check("提示含编译状态", "编译状态" in prompt and "pass" in prompt)
+    check("提示含编译状态", "Compile status" in prompt and "pass" in prompt)
     check("提示含运行输出", "ran-ok" in prompt)
     check("提示含输出约束", "issues" in prompt and "JSON" in prompt)
 

@@ -225,7 +225,7 @@ def auto_review(content, channel="?", task=None, no_memory=False, kind="message"
     except Exception as e:
         return 1, {"error": f"审查失败: {e}"}
     final_verdict = record["final"]
-    # 确定性验证器已命中（零 LLM 抓到）→ 跳过证伪者+仲裁（无需再用 LLM 复核确定性结论，省 5 次调用）
+    # deterministic verifier already hit (zero LLM) -> skip falsifier+arbitration (no need to re-verify a deterministic conclusion, saves 5 calls)
     if meta.get("verifier"):
         falsifier = False
         arbitrate = False
@@ -257,10 +257,10 @@ def auto_review(content, channel="?", task=None, no_memory=False, kind="message"
                     emit({"kind": "arbitration", **factcheck.summarize(arb_items)})
                 except Exception:
                     pass
-    # 证伪升级（P4 拆死门）：证伪者挑战 → 委员会判 pass → 升级 revise。
-    # 旧逻辑要求 confirmed（仲裁池空 → 全 unknown → 永不升级）。新规则：
-    #   confirmed → 升级；unknown（仲裁不可用/无定论）→ 也升级（独立跨厂模型的质疑宁检勿放）；
-    #   refuted（仲裁明确否证）→ 不升级（保留原文）。
+    # falsifier escalation (P4 dead-gate removed): falsifier challenge -> committee pass -> escalate to revise.
+    # Old logic required confirmed (empty arbiter pool -> all unknown -> never escalate). New rule:
+    #   confirmed -> escalate; unknown (arbitration unavailable/inconclusive) -> also escalate (independent cross-vendor doubt, better to flag than drop);
+    #   refuted (arbitration explicitly rejects) -> do not escalate (keep original).
     fals_confirmed, escalated = [], False
     if fals_meta:
         spec = fals_meta.get("spec", "")
