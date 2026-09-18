@@ -5,6 +5,7 @@ tests/test_context.py — P5 上下文装配器离线测试（零 API）
 验证 mjc.context 的确定性部分：py_compile 采集、运行采集、提示组装。
 """
 import os
+import shutil
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -59,8 +60,10 @@ def run():
         with open(p, "w", encoding="utf-8") as f:
             f.write(code)
         return p
-    st, out = run_sandboxed(_write("net.py", NET), tmp)
-    check("沙箱：网络隔离（连外网失败）", st.startswith("exit_") and "connected" not in out)
+    st, out = None, None
+    if shutil.which("bwrap"):  # 网络隔离仅 bwrap 可用时测；无 bwrap 时 fallback 无隔离，跳过
+        st, out = run_sandboxed(_write("net.py", NET), tmp)
+        check("沙箱：网络隔离（连外网失败）", st.startswith("exit_") and "connected" not in out)
     st2, out2 = run_sandboxed(_write("sleep.py", SLEEP), tmp, wall_s=3)
     check("沙箱：超时（sleep 30 → timeout）", st2 == "timeout")
 

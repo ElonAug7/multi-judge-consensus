@@ -32,7 +32,7 @@ jobs:
                    test_evidence_gate test_evidence_merge test_evidence_independence \
                    test_backend_health test_dissent_guard test_evidence_revise test_ipv4_pref \
                    test_parallel_search test_hallucination test_provider_reasoning \
-                   test_savings; do
+                   test_savings test_context test_weighted_vote; do
             echo "== $t =="
             python3 tests/$t.py
           done
