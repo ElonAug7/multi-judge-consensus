@@ -225,6 +225,10 @@ def auto_review(content, channel="?", task=None, no_memory=False, kind="message"
     except Exception as e:
         return 1, {"error": f"审查失败: {e}"}
     final_verdict = record["final"]
+    # 确定性验证器已命中（零 LLM 抓到）→ 跳过证伪者+仲裁（无需再用 LLM 复核确定性结论，省 5 次调用）
+    if meta.get("verifier"):
+        falsifier = False
+        arbitrate = False
     # 证伪者（独立性工程 ①）：对抗性找错 → 与委员会事实意见合并 → 独立仲裁复核
     fals_meta, fals_calls, fals_err = None, 0, None
     if falsifier:
