@@ -29,7 +29,7 @@ FALSIFY_PROMPT = """你是专职证伪者（红队审查员），任务是对下
 {task}
 【内容】
 {content}
-输出严格 JSON（不要 markdown 代码块）：
+{context_section}输出严格 JSON（不要 markdown 代码块）：
 {{"challenges":[{{"type":"factual_error|hallucination|logical_error|premise","desc":"疑点描述","suggestion":"建议核查/修正方向（可选）"}}],"note":"一句话总结"}}
 挑战最多 3 条，按可疑程度排序。"""
 
@@ -79,8 +79,9 @@ def resolve_spec(committee=None):
     return fallback
 
 
-def challenge(task, content, timeout=90):
+def challenge(task, content, timeout=90, context=None):
     """运行证伪者。返回 {spec, challenges:[{type,desc,suggestion}], calls, note} 或 {skipped/error}。
+    context（v0.13.0）：回合上下文（用户消息+工具轨迹）→ 减少“把真实工具动作当编造”的误报挑战。
     不抛出。"""
     spec = resolve_spec()
     if not spec:
@@ -88,8 +89,14 @@ def challenge(task, content, timeout=90):
     min_len = int(_cfg().get("min_len", 10))
     if len((content or "").strip()) < min_len:
         return {"skipped": "too_short", "len": len(content or "")}
+    ctx_section = ""
+    if context:
+        ctx_section = ("【会话上下文（转录自动提取的真实记录）】\n"
+                       + str(context).strip()[:2000]
+                       + "\n（防误杀规则：若疑点涉及“编造动作/数据”，先对照上述记录；记录支持该动作则不得提出该疑点；记录未覆盖 ≠ 未发生。）\n\n")
     provider, _, model = spec.partition(":")
-    prompt = FALSIFY_PROMPT.format(task=(task or "")[:400], content=(content or "")[:3000])
+    prompt = FALSIFY_PROMPT.format(task=(task or "")[:400], content=(content or "")[:3000],
+                                   context_section=ctx_section)
     try:
         raw = providers.chat(provider, [{"role": "user", "content": prompt}],
                              model=(model or None), temperature=0.3, max_tokens=4000, timeout=timeout)

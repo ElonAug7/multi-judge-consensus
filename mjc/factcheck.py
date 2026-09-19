@@ -25,7 +25,7 @@ ARB_PROMPT = """你是独立仲裁员，负责复核另一位审查员的“事�
 
 【被审内容（节选）】
 {content}
-
+{session_section}
 【审查员声明】原内容问题：{desc}
 【审查员建议】{sug}
 {evidence_section}
@@ -51,7 +51,7 @@ ARB_BATCH_PROMPT = """你是独立仲裁员，负责**逐条**复核另一位审
 
 【被审内容（节选）】
 {content}
-
+{session_section}
 【审查意见（共 {n} 条，请逐条复核）】
 {issues}
 {evidence_section}
@@ -143,6 +143,15 @@ def _evidence_section(ev):
     return "\n".join(lines) + "\n"
 
 
+def _session_section_arb(session_context):
+    """回合上下文（v0.13.0）→ 仲裁提示段：核对“编造/无依据”类指控时看真实工具记录。"""
+    if not session_context:
+        return ""
+    return ("【会话上下文（转录自动提取的真实记录，仅用于核对“动作是否真实发生”）】\n"
+            + str(session_context).strip()[:2000]
+            + "\n（规则：若被指“编造/无依据”的动作与上述记录一致 → 不应据此判原内容错误；记录未覆盖 ≠ 未发生，可标 unknown。）\n")
+
+
 def _extract_any(raw):
     """抽取 JSON（**兼容顶层数组**）。judge.extract_json 只认对象，而批量仲裁要求返回数组——
     直接用它会导致每条意见都拿不到票 → 全部 unknown（保守但白花钱）。"""
@@ -175,7 +184,7 @@ def _as_list(obj):
     return []
 
 
-def _batch_arbitrate(picked, judges, task, content, kb_budget, timeout):
+def _batch_arbitrate(picked, judges, task, content, kb_budget, timeout, session_context=None):
     """批量仲裁（v0.11.0k · 轻量化）：**一次调用复核全部意见**，而非每条意见各调一次。
 
     开销对比：原实现 = 意见数 × 仲裁员数（4 条 × 2 人 = 8 次）；批量为 2 次（每个仲裁员 1 次）。
@@ -201,7 +210,8 @@ def _batch_arbitrate(picked, judges, task, content, kb_budget, timeout):
             ev_blocks.append(f"（第 {i} 条相关检索证据）" + _evidence_section(ev).strip())
     prompt = ARB_BATCH_PROMPT.format(
         n=len(picked), task=(task or "")[:400], content=(content or "")[:800],
-        issues="\n".join(lines), evidence_section=("\n".join(ev_blocks) if ev_blocks else "（无外部证据）"))
+        issues="\n".join(lines), evidence_section=("\n".join(ev_blocks) if ev_blocks else "（无外部证据）"),
+        session_section=_session_section_arb(session_context))
     per_issue = {i: [] for i in range(1, len(picked) + 1)}
     calls = 0
 
@@ -263,10 +273,12 @@ def _batch_arbitrate(picked, judges, task, content, kb_budget, timeout):
     return items, calls
 
 
-def arbitrate_issues(task, content, issues, committee=None, timeout=90, max_issues=3, batch=False):
+def arbitrate_issues(task, content, issues, committee=None, timeout=90, max_issues=3, batch=False,
+                     session_context=None):
     """issues: [{judge_id, type, desc, sug}]（调用方已过滤事实类）。
     返回 {"items": [{...issue, outcome, votes}], "calls": N}；基础设施异常 → {"error": ...} 不抛出。
-    batch=True（v0.11.0k）：批量化——每个仲裁员一次调用复核全部意见（N×2 次 → 2 次）。"""
+    batch=True（v0.11.0k）：批量化——每个仲裁员一次调用复核全部意见（N×2 次 → 2 次）。
+    session_context（v0.13.0）：回合上下文（用户消息+工具轨迹）→ 核“编造动作”类指控用。"""
     if committee is None:
         try:
             committee = settings.effective()["committee"]
@@ -304,7 +316,8 @@ def arbitrate_issues(task, content, issues, committee=None, timeout=90, max_issu
                                "outcome": "unknown", "votes": [],
                                "note": "无可用的独立仲裁模型"} for it in picked],
                     "calls": 0, "batch": True}
-        b_items, b_calls = _batch_arbitrate(picked, judges, task, content, kb_budget, timeout)
+        b_items, b_calls = _batch_arbitrate(picked, judges, task, content, kb_budget, timeout,
+                                            session_context=session_context)
         return {"items": b_items, "calls": b_calls, "batch": True}
     for it in picked:
         desc = (it.get("desc") or "").strip()
@@ -324,7 +337,8 @@ def arbitrate_issues(task, content, issues, committee=None, timeout=90, max_issu
                 ev_used = None
         prompt = ARB_PROMPT.format(task=(task or "")[:400], content=(content or "")[:800],
                                    desc=desc[:300], sug=(it.get("sug") or "（无）")[:200],
-                                   evidence_section=_evidence_section(ev_used))
+                                   evidence_section=_evidence_section(ev_used),
+                                   session_section=_session_section_arb(session_context))
         votes = []
         for j in judges:
             try:

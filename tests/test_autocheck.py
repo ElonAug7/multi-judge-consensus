@@ -35,13 +35,14 @@ REVISE_RECORD = dict(PASS_RECORD, final="revise", revise_votes=2)
 
 
 def _setup(tmp, screen_on=False):
-    """通用 mock 环境。返回 (captured, tmp)。captured: {"task_text":..., "content":..., "calls": N}"""
-    captured = {"task_text": None, "content": None, "calls": 0}
+    """通用 mock 环境。返回 (captured, tmp)。captured: {"task_text":..., "content":..., "calls": N, "kwargs": {...}}"""
+    captured = {"task_text": None, "content": None, "calls": 0, "kwargs": {}}
 
     def _fake_run(task_text, content, pool, **kw):
         captured["task_text"] = task_text
         captured["content"] = content
         captured["calls"] += 1
+        captured["kwargs"] = kw
         return PASS_RECORD, PASS_META
 
     ac.AUTO_LOG_DIR = tmp
@@ -240,47 +241,97 @@ def test_dedupe_same_sha_kind_skips():
 
 
 def test_falsifier_escalation():
-    """证伪者升级（P4 拆死门）：confirmed 与 unknown 均升级 revise 并并入 issues；refuted 不升级"""
-    tmp = tempfile.mkdtemp(prefix="mjc-auto-")
-    _setup(tmp)
+    """证伪者升级（v0.13.0 校准）：confirmed→升级；unknown→默认仅“提示”（不改 verdict）；
+    refuted→不升级不提示；escalate_unknown=always 可回旧行为。"""
+    old_load = settings_mod.load
     old_f, old_a = ac._falsify, ac._arbitrate
-    ac._falsify = lambda *a, **k: {"spec": "dashscope:qwen-max", "calls": 1, "note": "n",
-        "challenges": [{"type": "factual_error", "desc": "挑战X", "suggestion": "改为Y"}]}
-    ac._arbitrate = lambda task, content, issues, timeout=90, max_issues=3: {
-        "items": [{"judge_id": "dashscope:qwen-max", "type": "factual_error", "desc": "挑战X",
-                    "sug": "改为Y", "outcome": "confirmed", "votes": []}], "calls": 2}
+    settings_mod.load = lambda *a, **k: {"falsifier": {"escalate_unknown": "never"}}
+
+    def _mk_fals(ch_desc):
+        return lambda *a, **k: {"spec": "dashscope:qwen-max", "calls": 1, "note": "n",
+                                "challenges": [{"type": "factual_error", "desc": ch_desc, "suggestion": ""}]}
+
+    def _mk_arb(ch_desc, outcome):
+        votes = [{"judge": "j", "my_answer": ("不确定" if outcome == "unknown" else "是"),
+                  "original_wrong": ("yes" if outcome == "confirmed" else outcome)}]
+        return lambda task, content, issues, timeout=90, max_issues=3, **k: {
+            "items": [{"judge_id": "dashscope:qwen-max", "type": "factual_error", "desc": ch_desc,
+                       "sug": "", "outcome": outcome, "votes": votes}], "calls": 2}
+
+    def _entry(tmp):
+        day = datetime.date.today().isoformat()
+        return json.loads(open(os.path.join(tmp, f"{day}.jsonl"), encoding="utf-8").readline())
+
     try:
+        # ① confirmed → 升级 revise 并并入 issues
+        tmp = tempfile.mkdtemp(prefix="mjc-auto-"); _setup(tmp)
+        ac._falsify = _mk_fals("挑战X")
+        ac._arbitrate = _mk_arb("挑战X", "confirmed")
         code, out = auto_review("这是一段足够长的、会被证伪者挑战的内容文本" * 6, no_memory=True)
         assert code == 0 and out["verdict"] == "revise", out
-        assert out.get("falsifier", {}).get("escalated") is True, out
-        day = datetime.date.today().isoformat()
-        entry = json.loads(open(os.path.join(tmp, f"{day}.jsonl"), encoding="utf-8").readline())
-        assert any(i.get("judge") == "falsifier" for i in entry["issues"]), entry["issues"]
-        # unknown → 也升级（P4 拆死门：仲裁不可用/无定论时，独立跨厂质疑宁检勿放）
-        tmp2 = tempfile.mkdtemp(prefix="mjc-auto-")
-        _setup(tmp2)
-        ac._falsify = lambda *a, **k: {"spec": "dashscope:qwen-max", "calls": 1,
-            "challenges": [{"type": "factual_error", "desc": "挑战Z", "suggestion": ""}]}
-        ac._arbitrate = lambda task, content, issues, timeout=90, max_issues=3: {
-            "items": [{"judge_id": "dashscope:qwen-max", "type": "factual_error", "desc": "挑战Z",
-                        "sug": "", "outcome": "unknown", "votes": []}], "calls": 2}
+        assert out["falsifier"]["escalated"] is True, out
+        e = _entry(tmp)
+        assert any(i.get("judge") == "falsifier" for i in e["issues"]), e["issues"]
+
+        # ② unknown（仲裁有有效票）→ 默认仅“提示”，不改 verdict
+        tmp2 = tempfile.mkdtemp(prefix="mjc-auto-"); _setup(tmp2)
+        ac._falsify = _mk_fals("挑战Z")
+        ac._arbitrate = _mk_arb("挑战Z", "unknown")
         code2, out2 = auto_review("另一段足够长的内容文本需要被审查确认" * 6, no_memory=True)
-        assert code2 == 0 and out2["verdict"] == "revise", out2
-        assert out2["falsifier"]["escalated"] is True, out2
-        # refuted → 不升级（仲裁明确否证，保留原文）
-        tmp3 = tempfile.mkdtemp(prefix="mjc-auto-")
-        _setup(tmp3)
-        ac._falsify = lambda *a, **k: {"spec": "dashscope:qwen-max", "calls": 1,
-            "challenges": [{"type": "factual_error", "desc": "挑战R", "suggestion": ""}]}
-        ac._arbitrate = lambda task, content, issues, timeout=90, max_issues=3: {
-            "items": [{"judge_id": "dashscope:qwen-max", "type": "factual_error", "desc": "挑战R",
-                        "sug": "", "outcome": "refuted", "votes": []}], "calls": 2}
+        assert code2 == 0 and out2["verdict"] == "pass", out2
+        assert out2["falsifier"]["escalated"] is False, out2
+        e2 = _entry(tmp2)
+        assert len(e2["falsifier"]["advisory"]) == 1, e2["falsifier"]
+        assert not any(i.get("judge") == "falsifier" for i in e2["issues"]), e2["issues"]
+
+        # ③ refuted → 不升级、无提示
+        tmp3 = tempfile.mkdtemp(prefix="mjc-auto-"); _setup(tmp3)
+        ac._falsify = _mk_fals("挑战R")
+        ac._arbitrate = _mk_arb("挑战R", "refuted")
         code3, out3 = auto_review("第三段足够长的内容文本需要被审查确认" * 6, no_memory=True)
         assert code3 == 0 and out3["verdict"] == "pass", out3
         assert out3["falsifier"]["escalated"] is False, out3
+        e3 = _entry(tmp3)
+        assert not (e3["falsifier"].get("advisory") or []), e3["falsifier"]
+
+        # ④ escalate_unknown="always" → 兼容旧行为：unknown 也升级
+        settings_mod.load = lambda *a, **k: {"falsifier": {"escalate_unknown": "always"}}
+        tmp4 = tempfile.mkdtemp(prefix="mjc-auto-"); _setup(tmp4)
+        ac._falsify = _mk_fals("挑战W")
+        ac._arbitrate = _mk_arb("挑战W", "unknown")
+        code4, out4 = auto_review("第四段足够长的内容文本需要被审查确认" * 6, no_memory=True)
+        assert code4 == 0 and out4["verdict"] == "revise", out4
+        assert out4["falsifier"]["escalated"] is True, out4
     finally:
         ac._falsify, ac._arbitrate = old_f, old_a
-    print("  ✅ 证伪者：confirmed/unknown→升级 revise；refuted→保持 pass")
+        settings_mod.load = old_load
+    print("  ✅ 证伪者校准：confirmed→升级；unknown→默认提示(不改verdict)；refuted→不动；always 可回旧行为")
+
+
+def test_session_ctx_plumbing():
+    """v0.13.0：session_ctx 透传（pipeline + 证伪者 + 日志元数据）"""
+    tmp = tempfile.mkdtemp(prefix="mjc-auto-")
+    captured = _setup(tmp)
+    got = {}
+
+    def _fake_fals(task, content, session_context=None, timeout=90):
+        got["ctx"] = session_context
+        return None
+
+    ac._falsify = _fake_fals
+    ctx = {"user": "用户上一条问题X", "tools": [{"brief": "web_fetch: https://a", "result": "ok"},
+                                                {"brief": "edit: b.md", "result": "成功"}]}
+    code, out = auto_review("一段足够长会被审查的内容文本用于透传测试" * 6, no_memory=True, session_ctx=ctx)
+    assert code == 0 and out["verdict"] == "pass", out
+    sc = captured["kwargs"].get("session_context")
+    assert sc and "用户上一条问题X" in sc and "web_fetch" in sc, sc
+    assert "edit: b.md" in sc and "2. " in sc, sc
+    assert got.get("ctx") == sc, (got, sc)
+    assert out.get("session_ctx") == {"user": True, "tools": 2}, out.get("session_ctx")
+    day = datetime.date.today().isoformat()
+    e = json.loads(open(os.path.join(tmp, f"{day}.jsonl"), encoding="utf-8").readline())
+    assert e.get("session_ctx") == {"user": True, "tools": 2}, e.get("session_ctx")
+    print("  ✅ session_ctx：转录上下文透传 pipeline/证伪者/日志元数据")
 
 
 def main():
@@ -298,6 +349,7 @@ def main():
     test_cmd_scan_full_path()
     test_dedupe_same_sha_kind_skips()
     test_falsifier_escalation()
+    test_session_ctx_plumbing()
     print("== autocheck 全部通过 ✅ ==")
 
 

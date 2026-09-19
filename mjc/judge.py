@@ -20,7 +20,7 @@ JUDGE_PROMPT = """你是一个独立审查员，属于多模型审查委员会�
 【Agent 输出】
 {agent_output}
 
-{memory_section}{other_opinions_section}
+{session_section}{memory_section}{other_opinions_section}
 请输出你的审查意见，必须是合法 JSON（不要用 markdown 代码块包裹），格式：
 {{
   "verdict": "pass 或 reject 或 revise",
@@ -49,7 +49,7 @@ JUDGE_PROMPT = """你是一个独立审查员，属于多模型审查委员会�
 - 【Verifiable vs unverifiable】Verifiable facts (arithmetic, powers/exponents, stdlib/builtin module membership, known constants such as pi, date spans) have a single correct answer: you must verify them independently and judge decisively, never pass or escalate to human out of "uncertainty". Only unverifiable facts (names/works/attribution, style preference) get the "prefer to pass" rule above.
 即使你是唯一发现问题的人，只要问题真实存在就请坚持判断并说明理由。
 
-{memory_rules}"""
+{memory_rules}{session_rules}"""
 
 
 MEMORY_RULES = """
@@ -72,6 +72,24 @@ def _memory_section(memory):
         lines.append(f"{i}. 【{src}·{date}】{m.get('text', '')[:300]}")
     section = "【背景记忆（外部检索，仅参考，可能过时）】\n" + "\n".join(lines) + "\n\n"
     return section, MEMORY_RULES
+
+
+SESSION_RULES = """
+【会话上下文的使用规则（防误杀）】
+- 上面的“会话上下文”从真实运行记录自动提取（上一条用户消息 + 本轮实际工具调用），用于判断输出中“提到的动作/数据是否真实发生”。
+- 输出描述的动作（“我查了/我写了/我运行了”）若与记录一致 → 视为有依据，不得判定为编造或“无证据/无依据”；记录不全导致未见 ≠ 未发生（最多标注“记录未覆盖”）。
+- 输出描述与记录明确矛盾（如声称写 X 却只见读 Y）→ 仍按 hallucination/factual_error 处理。
+- 会话上下文不是被审内容本身，无需审查它。
+"""
+
+
+def _session_section(session_context):
+    """回合上下文（str）→ prompt 段落 + 使用规则。"""
+    if not session_context:
+        return "", ""
+    section = ("【会话上下文（转录自动提取，真实记录）】\n"
+               + str(session_context).strip()[:2000] + "\n\n")
+    return section, SESSION_RULES
 
 
 def extract_json(text):
@@ -122,24 +140,30 @@ class Judge:
         self.name = name or f"{provider}:{model or providers.MODELS.get(provider, '')}"
         self.display = providers.display_name(provider, model)
 
-    def review(self, user_task, agent_output, other_opinions=None, timeout=90, memory=None):
-        """执行一轮审查，返回结构化结果 + 原始响应。memory: [{text,source,date}] 背景记忆
+    def review(self, user_task, agent_output, other_opinions=None, timeout=90, memory=None,
+               session_context=None):
+        """执行一轮审查，返回结构化结果 + 原始响应。memory: [{text,source,date}] 背景记忆；
+        session_context（v0.13.0）: 回合上下文文本（用户消息+工具轨迹）→ 防“动作当幻觉”误杀。
         健壮性（P1.1）：首选模型失败（空响应/5xx 重试耗尽后 raise 或响应不可解析）→
         自动换同厂商替补模型（注册表下一个）再试一次；无替补则同模型重试（保持原行为）。
         预算至多 2 次 chat 调用；认证类（401/403）换模型无意义 → 直接抛给上层记 error 票。"""
         memory = memory if memory is not None else getattr(self, "memory", None)
+        session_context = session_context if session_context is not None else getattr(self, "session_context", None)
         opinions_section = ""
         if other_opinions:
             opinions_section = "【其他审查员的意见】（请参考，但独立判断，不盲从）：\n" + json.dumps(
                 other_opinions, ensure_ascii=False, indent=1
             )
         mem_section, mem_rules = _memory_section(memory)
+        sess_section, sess_rules = _session_section(session_context)
         prompt = JUDGE_PROMPT.format(
             user_task=user_task,
             agent_output=agent_output,
+            session_section=sess_section,
             memory_section=mem_section,
             other_opinions_section=opinions_section,
             memory_rules=mem_rules,
+            session_rules=sess_rules,
         )
         primary = self.model or providers.MODELS.get(self.provider)
         backup = _backup_model(self.provider, primary)

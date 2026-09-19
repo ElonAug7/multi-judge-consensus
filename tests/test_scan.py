@@ -118,6 +118,72 @@ def test_candidate_extraction():
     print("  ✅ newest_candidate：user/toolCall 中间步/坏行跳过，多 session 取最新，字段完整；min_len 可配")
 
 
+def test_turn_context():
+    """v0.13.0：候选终稿附带“回合上下文”（上一条用户消息 + 工具轨迹含结果）。"""
+    root, sess, logs = _fresh_dirs()
+    t0 = datetime.now(timezone.utc) - timedelta(minutes=5)
+
+    def _tc(i, name, args):
+        return [{"type": "toolCall", "id": f"c{i}", "name": name, "arguments": args}]
+
+    def _ta(i, blocks):
+        return json.dumps({"id": f"a{i}", "type": "message", "timestamp": _iso(t0 + timedelta(seconds=i)),
+                           "message": {"role": "assistant", "content": blocks}}, ensure_ascii=False)
+
+    def _tr(i, text):
+        return json.dumps({"id": f"r{i}", "type": "message", "timestamp": _iso(t0 + timedelta(seconds=i)),
+                           "message": {"role": "toolResult", "toolCallId": f"c{i - 1}", "toolName": "x",
+                                       "content": [{"type": "text", "text": text}]}}, ensure_ascii=False)
+
+    _write_session(sess, "ctx.jsonl", [
+        _line("u1", "user", [_txt("个体工商户在支付宝里点哪个？")], t0),
+        _ta(1, _tc(1, "web_fetch", {"url": "https://www.bing.com/search?q=abc"})),
+        _tr(2, "页面内容：搜索结果不太相关"),
+        _ta(3, _tc(2, "edit", {"path": "projects/x.md"})),
+        _tr(4, "Successfully replaced 1 block(s)"),
+        _line("a9", "assistant", [_txt(LONG)], t0 + timedelta(seconds=5)),
+    ])
+    cand, sid = scan.newest_candidate()
+    assert sid == "ctx" and cand["id"] == "a9", (cand, sid)
+    ctx = cand.get("context")
+    assert ctx and "个体工商户" in (ctx.get("user") or ""), ctx
+    assert len(ctx["tools"]) == 2, ctx
+    assert "web_fetch" in ctx["tools"][0]["brief"] and "不太相关" in (ctx["tools"][0]["result"] or ""), ctx["tools"][0]
+    assert "edit" in ctx["tools"][1]["brief"] and "Successfully" in (ctx["tools"][1]["result"] or ""), ctx["tools"][1]
+    # 无用户消息/无工具（如心跳触发）→ context=None
+    _write_session(sess, "bare.jsonl", [_line("b1", "assistant", [_txt(LONG)], t0 + timedelta(seconds=60))])
+    cand, sid = scan.newest_candidate()
+    assert sid == "bare" and cand.get("context") is None, (sid, cand.get("context"))
+    # 新用户消息 + 新终稿 → 轨迹重置（只含新回合）
+    _write_session(sess, "ctx.jsonl", [
+        _line("u2", "user", [_txt("第二个问题呢")], t0 + timedelta(seconds=70)),
+        _line("a10", "assistant", [_txt(LONG)], t0 + timedelta(seconds=71)),
+    ], mode="a")
+    cand, sid = scan.newest_candidate()
+    assert sid == "ctx" and cand["id"] == "a10", (cand, sid)
+    ctx2 = cand.get("context")
+    assert ctx2["user"] == "第二个问题呢" and ctx2["tools"] == [], ctx2
+    # 心跳消息不当作用户回合 → 无 context
+    _write_session(sess, "hb.jsonl", [
+        _line("h0", "user", [_txt("[OpenClaw heartbeat poll]")], t0 + timedelta(seconds=80)),
+        _line("h1", "assistant", [_txt(LONG)], t0 + timedelta(seconds=81))])
+    cand, sid = scan.newest_candidate()
+    assert sid == "hb" and cand.get("context") is None, (sid, cand.get("context"))
+    # 真实形态：user 消息 content 为纯字符串 → 也要能提取
+    _write_session(sess, "str.jsonl", [
+        json.dumps({"id": "us1", "type": "message", "timestamp": _iso(t0 + timedelta(seconds=90)),
+                    "message": {"role": "user", "content": "字符串形态的问题"}}, ensure_ascii=False),
+        _ta(91, _tc(1, "exec", {"command": "ls -la"})),
+        _tr(92, "total 0"),
+        _line("a20", "assistant", [_txt(LONG)], t0 + timedelta(seconds=93)),
+    ])
+    cand, sid = scan.newest_candidate()
+    assert sid == "str" and cand["id"] == "a20", (cand, sid)
+    ctx3 = cand.get("context")
+    assert ctx3["user"] == "字符串形态的问题" and len(ctx3["tools"]) == 1, ctx3
+    print("  ✅ turn_context：用户消息+工具轨迹提取（含结果）；心跳跳过；新回合重置；字符串形态；无信息→None")
+
+
 def test_default_full_intervention_short_and_placeholders():
     root, sess, logs = _fresh_dirs()
     t0 = datetime.now(timezone.utc) - timedelta(minutes=5)
@@ -269,6 +335,7 @@ def main():
     print("== scan 转录扫描器离线测试（零 API）==")
     test_parse_ts()
     test_candidate_extraction()
+    test_turn_context()
     test_default_full_intervention_short_and_placeholders()
     test_stale_file_skipped()
     test_find_new_cursor_flows()

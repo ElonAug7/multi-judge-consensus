@@ -40,6 +40,91 @@ def _parse_ts(iso):
         return None
 
 
+def _brief_tool(name, args):
+    """工具调用 → 单行摘要（审查上下文用）。args 容错任意形态。"""
+    a = args if isinstance(args, dict) else {}
+    n = name or "?"
+    if n == "exec":
+        cmd = re.sub(r"\s+", " ", str(a.get("command") or a.get("cmd") or "")).strip()
+        return f"exec: {cmd[:160]}"
+    if n in ("web_fetch", "web_search"):
+        return f"{n}: {str(a.get('url') or a.get('query') or '')[:160]}"
+    if n in ("read", "write", "edit", "apply_patch", "delete"):
+        return f"{n}: {str(a.get('path') or a.get('file') or '')[:160]}"
+    if n == "process":
+        return f"process: {a.get('action', '')} {str(a.get('sessionId') or '')[:40]}"
+    flat = "; ".join(f"{k}={str(v)[:60]}" for k, v in a.items() if isinstance(v, (str, int, float, bool)))
+    return f"{n}: {flat[:160]}" if flat else n
+
+
+def _turn_context(path, upto_ms, max_tools=12):
+    """为候选终稿提取“回合上下文”：上一条用户消息 + 本轮工具调用轨迹（含结果摘要）。
+    目的（v0.13.0）：修复“审查看不到工具轨迹 → 把真实动作当幻觉”的误杀盲区（2026-09-19 实测 2 例）。
+    返回 {"user": str|None, "tools": [{"id","brief","result"}]} 或 None；全程容错。"""
+    user_text, tools = None, []
+    try:
+        with open(path, encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    d = json.loads(line)
+                except Exception:
+                    continue
+                if d.get("type") != "message":
+                    continue
+                ts = _parse_ts(d.get("timestamp") or "")
+                if ts is None or ts > upto_ms:
+                    continue
+                m = d.get("message") or {}
+                role = m.get("role")
+                blocks = m.get("content") or []
+                if role == "user":
+                    if isinstance(blocks, str):  # 真实转录：用户消息 content 常为纯字符串
+                        text = blocks.strip()
+                    else:
+                        text = "".join(c.get("text") or "" for c in blocks
+                                       if isinstance(c, dict) and c.get("type") == "text").strip()
+                    low = text.lower()
+                    if ((not text) or text in ("NO_REPLY", "HEARTBEAT_OK") or "heartbeat" in low
+                            or low.startswith("continue the openclaw")):
+                        continue
+                    if not re.search(r"\w", text):
+                        continue
+                    user_text = text[:300]
+                    tools = []  # 新回合：轨迹清零
+                elif role == "assistant":
+                    for c in blocks:
+                        if isinstance(c, dict) and c.get("type") == "toolCall":
+                            tools.append({"id": c.get("id"),
+                                          "brief": _brief_tool(c.get("name"), c.get("arguments") or {}),
+                                          "result": None})
+                elif role == "toolResult":
+                    txt = "".join(c.get("text") or "" for c in blocks
+                                  if isinstance(c, dict) and c.get("type") == "text")
+                    txt = re.sub(r"\s+", " ", txt).strip()[:100]
+                    tcid = m.get("toolCallId")
+                    target = None
+                    if tcid:
+                        for t in tools:
+                            if t.get("id") == tcid:
+                                target = t
+                                break
+                    if target is None:
+                        for t in reversed(tools):
+                            if t.get("result") is None:
+                                target = t
+                                break
+                    if target is not None:
+                        target["result"] = txt or "ok"
+    except Exception:
+        return None
+    if not user_text and not tools:
+        return None
+    return {"user": user_text, "tools": tools[-max_tools:]}
+
+
 _corrupt_warned = None  # 进程内去重：同一 cursor 文件损坏只记一次事件，防刷屏
 
 
@@ -170,7 +255,8 @@ def set_cursor(ts_ms):
 
 def newest_candidate(min_len=None, max_age_h=36):
     """所有 session 转录里最新的 assistant 终稿（含 text≥min_len（None→MIN_LEN，默认 1）、无 toolCall）。
-    返回 (entry, session_id) 或 (None, None)。只扫 36h 内有改动的文件。"""
+    返回 (entry, session_id) 或 (None, None)；entry 含 context（回合上下文：用户消息+工具轨迹，v0.13.0）。
+    只扫 36h 内有改动的文件。"""
     if min_len is None:
         min_len = MIN_LEN
     if not os.path.isdir(SESS_DIR):
@@ -224,6 +310,9 @@ def newest_candidate(min_len=None, max_age_h=36):
                         best_sid = fn[:-6]
         except Exception:
             continue
+    if best is not None and best_sid:
+        # v0.13.0：附带“回合上下文”（上一条用户消息 + 本轮工具轨迹）→ 审查注入，修复工具轨迹盲区误杀
+        best["context"] = _turn_context(os.path.join(SESS_DIR, best_sid + ".jsonl"), best["ts_ms"])
     return best, best_sid
 
 

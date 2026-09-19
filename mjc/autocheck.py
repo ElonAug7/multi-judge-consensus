@@ -3,9 +3,11 @@
 """
 MJC · autocheck.py — 自动审查（auto_review / cmd_auto / cmd_scan）
 P3 结构拆分：自 mjc.cli 移出。cli.py 保持薄壳，顶层再导出本模块符号（旧 import 不破）。
-  auto_review  内容+记忆 → 初筛/委员会 → logs/auto/{day}.jsonl（hook 转录扫描 / 代码交付工作流）；
+  auto_review  内容+记忆+回合上下文 → 初筛/委员会 → logs/auto/{day}.jsonl（hook 转录扫描 / 代码交付工作流）；
                同 sha+同 kind 内容 6h 内已审 → 跳过（当日日志尾 100 行比对，P4.2 去重）
                长度门槛读 settings.limits（gate/auto/scan，默认 1 ≈ 全量；NO_REPLY/纯符号跳过）
+               v0.13.0：session_ctx（转录提取的“用户消息+工具轨迹”）透传审查链（Judge/证伪/仲裁），
+                        修复“审查看不到工具轨迹→把真实动作当幻觉”误杀；证伪者升级默认改 confirmed-only（可配）
   cmd_auto     CLI auto 子命令实现（argparse 接线仍在 cli.main）
   cmd_scan     转录扫描（webchat 触发源）：找最新未审终稿 → auto_review（受 autoswitch 总开关门控：pause 时早退）
 """
@@ -39,6 +41,35 @@ def _limit(name, fallback=1):
         return fallback
 
 
+def _format_session_ctx(ctx):
+    """session_ctx（dict|str）→ 注入审查的上下文文本（仅正文；标题/规则由各消费者包装）。
+    dict 形如 {"user": str, "tools": [{"brief", "result"}]}；空 → None。"""
+    if not ctx:
+        return None
+    if isinstance(ctx, str):
+        return ctx.strip() or None
+    if not isinstance(ctx, dict):
+        return None
+    lines = []
+    user = str(ctx.get("user") or "").strip()
+    tools = ctx.get("tools") or []
+    if user:
+        lines.append("用户上一条消息：" + re.sub(r"\s+", " ", user)[:300])
+    if tools:
+        lines.append("Agent 本轮真实工具调用记录（自动提取，可能不全）：")
+        shown = tools[-12:]
+        for i, t in enumerate(shown, 1):
+            if isinstance(t, dict):
+                brief = str(t.get("brief") or "")[:170]
+                res = t.get("result")
+                lines.append(f"{i}. {brief}" + (f" → {str(res)[:90]}" if res else ""))
+            else:
+                lines.append(f"{i}. {str(t)[:170]}")
+        if len(tools) > len(shown):
+            lines.append(f"（更早 {len(tools) - len(shown)} 条工具调用未列出）")
+    return "\n".join(lines) if lines else None
+
+
 FACT_ISSUE_TYPES = ("factual_error", "hallucination")
 
 
@@ -66,11 +97,12 @@ def _collect_arb_issues(record):
     return [merged[k] for k in order]
 
 
-def _arbitrate(task, content, issues, timeout=90, max_issues=None):
+def _arbitrate(task, content, issues, timeout=90, max_issues=None, session_context=None):
     """非 pass 时对事实类意见做独立仲裁（mjc.factcheck）；失败返回 None（不阻塞主流程）。
 
     v0.11.0k 轻量化：批量仲裁由 settings.factcheck.batch 控制（默认 false=逐条，行为不变）。
     逐条 = 意见数 × 仲裁员数（4 条 × 2 人 = 8 次调用）；批量 = 2 次（每人一次复核全部意见）。
+    session_context: 回合上下文（用户消息+工具轨迹）→ 仲裁复核“编造/无依据”类指控用（v0.13.0）。
     """
     try:
         from mjc import factcheck, settings as _settings
@@ -81,19 +113,21 @@ def _arbitrate(task, content, issues, timeout=90, max_issues=None):
             except (TypeError, ValueError):
                 max_issues = 3
         r = factcheck.arbitrate_issues(task, content, issues, timeout=timeout,
-                                       max_issues=max_issues, batch=bool(cfg.get("batch", False)))
+                                       max_issues=max_issues, batch=bool(cfg.get("batch", False)),
+                                       session_context=session_context)
         return r if isinstance(r, dict) else None
     except Exception:
         return None
 
 
-def _falsify(task, content, timeout=90):
-    """证伪者（红队找错，独立性工程 ①）；瞬时失败重试 1 次；仍失败返回 {"error": ...}（不阻塞主流程）。"""
+def _falsify(task, content, timeout=90, session_context=None):
+    """证伪者（红队找错，独立性工程 ①）；瞬时失败重试 1 次；仍失败返回 {"error": ...}（不阻塞主流程）。
+    session_context（v0.13.0）：注入会话上下文，减少“把真实工具动作当编造”的误报挑战。"""
     from mjc import falsifier
     last = None
     for attempt in (1, 2):
         try:
-            r = falsifier.challenge(task, content, timeout=timeout)
+            r = falsifier.challenge(task, content, timeout=timeout, context=session_context)
             if isinstance(r, dict) and not r.get("error"):
                 return r
             last = r if isinstance(r, dict) else {"error": "bad_result"}
@@ -146,13 +180,15 @@ def _recent_duplicate(sha, kind, hours=DEDUPE_H):
 
 def auto_review(content, channel="?", task=None, no_memory=False, kind="message", verbose=False,
               emit=None, task_id=None, min_len=None, no_screen=False, screen_override=None,
-              arbitrate=True, falsifier=True, dedupe=True):
+              arbitrate=True, falsifier=True, dedupe=True, session_ctx=None):
     """自动审查核心（供 cmd_auto 与 cmd_scan 复用）。返回 (exit_code, summary_dict)。
     kind: message（回复文本）| code（代码任务收尾审查，交付前用）
     min_len=None → 读 settings.limits.auto（默认 1，≈全量送审）；no_screen 强制跳过初筛。
     arbitrate=True：非 pass 时对“事实类意见”做独立仲裁（factcheck）并写入日志/输出。
-    falsifier=True：证伪者红队找错（独立性工程），confirmed 挑战可将 pass 升级为 revise。
-    dedupe=True：同 sha+kind 数小时内已审过则跳过（hook 去重用）；实验 harness 传 False 强制新鲜审查。"""
+    falsifier=True：证伪者红队找错（独立性工程）；升级规则 v0.13.0 起=默认仅 confirmed 升级。
+    dedupe=True：同 sha+kind 数小时内已审过则跳过（hook 去重用）；实验 harness 传 False 强制新鲜审查。
+    session_ctx（v0.13.0）：dict（转录提取 {user, tools}）|str → 注入审查链（Judge/证伪/仲裁），
+              修复“审查看不到工具轨迹→把真实动作当幻觉”的误杀。"""
     content = (content or "").strip()
     channel = channel or "?"
     kind = kind or "message"
@@ -203,6 +239,7 @@ def auto_review(content, channel="?", task=None, no_memory=False, kind="message"
         except Exception as e:
             mem_meta = {"primary": "none", "attempted": ["mnemosyne"], "notes": f"memctx 异常: {e}"}
     task_text = (task or "").strip()[:500] or ("（代码任务收尾审查）回顾以下改动描述与代码片段是否准确" if kind == "code" else "（自动审查）回顾以下 Agent 输出是否准确可靠")
+    session_text = _format_session_ctx(session_ctx)
     log = os.path.join(LOG_DIR, f"auto-{int(time.time())}.jsonl")
     # 默认实时事件（task_id=内容 sha10；env MJC_LIVE=0 关闭）
     if emit is None and os.environ.get("MJC_LIVE") != "0":
@@ -220,7 +257,7 @@ def auto_review(content, channel="?", task=None, no_memory=False, kind="message"
             screen_judge=screen_j, screen_conf=None,
             use_screen=screen_j is not None, use_cache=False, use_degrade=False,
             trust_path=TRUST_PATH, debate_log_dir=None, log_path=log,
-            memory=facts or None, emit=emit,
+            memory=facts or None, emit=emit, session_context=session_text,
         )
     except Exception as e:
         return 1, {"error": f"审查失败: {e}"}
@@ -232,7 +269,7 @@ def auto_review(content, channel="?", task=None, no_memory=False, kind="message"
     # 证伪者（独立性工程 ①）：对抗性找错 → 与委员会事实意见合并 → 独立仲裁复核
     fals_meta, fals_calls, fals_err = None, 0, None
     if falsifier:
-        _f = _falsify(task_text, content)
+        _f = _falsify(task_text, content, session_context=session_text)
         if _f and not _f.get("error") and not _f.get("skipped"):
             fals_meta = _f
             fals_calls = int(_f.get("calls") or 0)
@@ -247,7 +284,7 @@ def auto_review(content, channel="?", task=None, no_memory=False, kind="message"
                                "sug": ch.get("suggestion", "")})
     arb_items, arb_calls = [], 0
     if arbitrate and arb_inputs and (final_verdict in ("revise", "reject", "need_human") or fals_meta):
-        _arb = _arbitrate(task_text, content, arb_inputs, max_issues=4)
+        _arb = _arbitrate(task_text, content, arb_inputs, max_issues=4, session_context=session_text)
         if _arb and not _arb.get("error"):
             arb_items = _arb.get("items") or []
             arb_calls = int(_arb.get("calls") or 0)
@@ -257,30 +294,54 @@ def auto_review(content, channel="?", task=None, no_memory=False, kind="message"
                     emit({"kind": "arbitration", **factcheck.summarize(arb_items)})
                 except Exception:
                     pass
-    # falsifier escalation (P4 dead-gate removed): falsifier challenge -> committee pass -> escalate to revise.
-    # Old logic required confirmed (empty arbiter pool -> all unknown -> never escalate). New rule:
-    #   confirmed -> escalate; unknown (arbitration unavailable/inconclusive) -> also escalate (independent cross-vendor doubt, better to flag than drop);
-    #   refuted (arbitration explicitly rejects) -> do not escalate (keep original).
-    fals_confirmed, escalated = [], False
+    # falsifier escalation（v0.13.0 校准，2026-09-19）：默认只在 confirmed 时升级 revise；
+    # unknown（仲裁有裁决但无定论）降级为“提示”（保留在日志/WebUI，不改 verdict）。
+    # 背景：生产实测“unknown 也升级”导致 ≈全量 soft-revise（09-18 32/51、09-19 42/57），信号稀释。
+    # settings.falsifier.escalate_unknown: "never"（默认）| "always"（旧行为）| "arb_unavailable"（仲裁失效时才升）
+    fals_confirmed, fals_advisory, escalated = [], [], False
     if fals_meta:
         spec = fals_meta.get("spec", "")
         outcomes = {a.get("desc", "")[:120]: a.get("outcome")
                     for a in (arb_items or []) if a.get("judge_id") == spec}
+        try:
+            from mjc import settings as _st
+            esc_mode = str((_st.load().get("falsifier") or {}).get("escalate_unknown") or "never").strip()
+        except Exception:
+            esc_mode = "never"
+        # 仲裁是否真实产出（无 items / 全部无有效票 → 视为不可用）
+        arb_ok = False
+        for _it in (arb_items or []):
+            for _v in (_it.get("votes") or []):
+                if _v.get("my_answer") or _v.get("original_wrong") in ("yes", "no"):
+                    arb_ok = True
+                    break
+            if arb_ok:
+                break
         for ch in fals_meta.get("challenges") or []:
-            ch["outcome"] = outcomes.get((ch.get("desc") or "")[:120], "unknown")
-            if ch["outcome"] == "refuted":
-                continue  # 仲裁明确否证 → 不升级
-            # confirmed 或 unknown（仲裁空/无定论）→ 证伪者独立质疑足以触发软 revise
-            fals_confirmed.append(ch)
+            o = outcomes.get((ch.get("desc") or "")[:120], "unknown")
+            ch["outcome"] = o
+            if o == "refuted":
+                continue  # 仲裁明确否证 → 不升级、不提示（保留原文）
+            if o == "confirmed":
+                fals_confirmed.append(ch)
+            elif esc_mode == "always" or (esc_mode == "arb_unavailable" and not arb_ok):
+                fals_confirmed.append(ch)  # 配置回退旧行为
+            else:
+                fals_advisory.append(ch)  # v0.13.0：提示（不改 verdict）
         if fals_confirmed and final_verdict == "pass":
             final_verdict = "revise"
             escalated = True
         if emit:
             try:
                 emit({"kind": "falsifier", "n": len(fals_meta.get("challenges") or []),
-                      "confirmed": len(fals_confirmed), "escalated": escalated})
+                      "confirmed": len(fals_confirmed), "escalated": escalated,
+                      "advisory": len(fals_advisory)})
             except Exception:
                 pass
+    ctx_meta = None
+    if session_text:
+        ctx_meta = {"user": bool(isinstance(session_ctx, dict) and session_ctx.get("user")),
+                    "tools": len(session_ctx.get("tools") or []) if isinstance(session_ctx, dict) else 0}
     entry = {
         "ts": datetime.datetime.now().isoformat(timespec="seconds"),
         "kind": kind, "channel": channel, "len": len(content),
@@ -292,6 +353,7 @@ def auto_review(content, channel="?", task=None, no_memory=False, kind="message"
         "screen_passed": meta.get("screen_passed"),
         "tokens": record.get("tokens"), "cost_yuan": record.get("cost_yuan"),
         "memory": mem_meta,
+        "session_ctx": ctx_meta,
         "issues": [{"type": i.get("type"),
                      "judge": o.get("judge_display") or o.get("judge_id") or "?",
                      "desc": i.get("description", "")[:200],
@@ -303,10 +365,12 @@ def auto_review(content, channel="?", task=None, no_memory=False, kind="message"
         "falsifier": ({"model": fals_meta.get("spec"), "n": len(fals_meta.get("challenges") or []),
                         "challenges": fals_meta.get("challenges") or [],
                         "confirmed": len(fals_confirmed), "escalated": escalated,
+                        "advisory": [{"type": c.get("type"), "desc": (c.get("desc") or "")[:120]}
+                                     for c in fals_advisory[:4]],
                         "note": fals_meta.get("note")} if fals_meta else None),
         "falsifier_error": fals_err,
     }
-    if fals_confirmed:  # 证伪者 confirmed 的挑战并入 issues（供修复环节消费）
+    if fals_confirmed:  # 证伪者 confirmed（或配置回退）的挑战并入 issues（供修复环节消费）
         entry["issues"] = (entry["issues"] + [
             {"type": ch.get("type", "factual_error"), "judge": "falsifier",
              "desc": (ch.get("desc") or "")[:200], "sug": (ch.get("suggestion") or "")[:150]}
@@ -316,7 +380,7 @@ def auto_review(content, channel="?", task=None, no_memory=False, kind="message"
         f.write(json.dumps(entry, ensure_ascii=False) + "\n")
     out = {"reviewed": True, "kind": kind, "verdict": final_verdict, "api_calls": entry["api_calls"],
            "memory_source": mem_meta.get("primary"), "sha": entry["sha"],
-           "len": entry["len"], "screened": entry["screened"]}
+           "len": entry["len"], "screened": entry["screened"], "session_ctx": ctx_meta}
     if arb_items:
         try:
             from mjc import factcheck
@@ -326,7 +390,8 @@ def auto_review(content, channel="?", task=None, no_memory=False, kind="message"
     if fals_meta:
         out["falsifier"] = {"model": fals_meta.get("spec"),
                             "n": len(fals_meta.get("challenges") or []),
-                            "confirmed": len(fals_confirmed), "escalated": escalated}
+                            "confirmed": len(fals_confirmed), "escalated": escalated,
+                            "advisory": len(fals_advisory)}
     if fals_err:
         out["falsifier_error"] = fals_err
     if final_verdict in ("reject", "need_human"):
@@ -395,7 +460,7 @@ def cmd_scan(args):
     scan_mod.set_lock()
     channel = f"session:{sid}" if sid else "?"
     code, out = auto_review(cand["content"], channel=channel, no_memory=getattr(args, "no_memory", False),
-                            min_len=(0 if forced else min_len))
+                            min_len=(0 if forced else min_len), session_ctx=cand.get("context"))
     scan_mod.set_cursor(cand["ts_ms"])
     out.update({"cursor": cand["ts"], "entry_id": cand.get("id")})
     print(json.dumps(out, ensure_ascii=False))

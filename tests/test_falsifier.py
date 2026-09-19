@@ -87,10 +87,34 @@ def test_challenge_parse():
     print("  ✅ challenge：解析/去重/截断/太短跳过/异常不抛")
 
 
+def test_context_prompt():
+    """v0.13.0：会话上下文注入证伪提示词（无则不出）。"""
+    seen = []
+
+    def _chat(provider, msgs, **kw):
+        seen.append(msgs[0]["content"])
+        return '{"challenges":[],"note":"n"}'
+
+    restore = _patch(load=lambda data=None: {"falsifier": {"enabled": True, "model": "dashscope:qwen-max", "min_len": 5}},
+                     hk=lambda n: True, chat=_chat)
+    try:
+        r = falsifier.challenge("任务T", "x" * 100,
+                                context="用户上一条消息：帮我查入口\nAgent 本轮真实工具调用记录（自动提取，可能不全）：\n1. web_fetch: https://a → ok")
+        assert "会话上下文" in seen[-1] and "帮我查入口" in seen[-1], "上下文应注入提示词"
+        assert "防误杀" in seen[-1]
+        r2 = falsifier.challenge("任务T", "x" * 100)
+        assert "会话上下文" not in seen[-1], "无上下文时不应出现该段"
+        assert r["challenges"] == [] and r2["challenges"] == []
+    finally:
+        restore()
+    print("  ✅ context：会话上下文注入证伪提示词（无则不出）")
+
+
 def main():
     print("== falsifier 证伪者离线测试（零 API）==")
     test_resolve_spec()
     test_challenge_parse()
+    test_context_prompt()
     print("== falsifier 全部通过 ✅ ==")
 
 

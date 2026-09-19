@@ -208,7 +208,8 @@
  "falsifier": {
   "enabled": true,
   "model": "",
-  "min_len": 10
+  "min_len": 10,
+  "escalate_unknown": "never"
  },
  "factcheck": {
   "batch": false,

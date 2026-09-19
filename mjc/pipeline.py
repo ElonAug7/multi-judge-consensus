@@ -179,12 +179,14 @@ def run_review_once(task, output, pool, screen_judge=None, screen_conf=None,
                     use_screen=True, use_cache=None, use_degrade=None,
                     trust_path=None, debate_log_dir=None, log_path=None,
                     memory=None, use_verifier=True, emit=None, max_debate_rounds=None,
-                    use_trust_weights=None):
+                    use_trust_weights=None, session_context=None):
     """
     一次审查（任务+产出+池固定）。详见模块 docstring。
     pool: [Judge,...]（≥2）；screen_judge: 初筛 Judge 或 None（关闭初筛）。
     screen_conf/use_cache/use_degrade 为 None 时读后台设置（settings.json）。
     memory: [{text,source,date}] 背景记忆（memctx 产物）→ 注入全体 Judge。
+    session_context: 回合上下文（转录提取的用户消息+工具轨迹，v0.13.0）→ 注入全体 Judge，
+                     修复“审查看不到工具轨迹→把真实动作当幻觉”的误杀。
     """
     screen_conf = resolve_screen_conf(screen_conf)
     if use_cache is None or use_degrade is None or use_trust_weights is None:
@@ -212,6 +214,10 @@ def run_review_once(task, output, pool, screen_judge=None, screen_conf=None,
     if memory:
         for j in list(pool) + ([screen_judge] if screen_judge else []):
             j.memory = memory
+    # 回合上下文透传（v0.13.0：转录提取的任务+工具轨迹 → 注入 Judge）
+    if session_context:
+        for j in list(pool) + ([screen_judge] if screen_judge else []):
+            j.session_context = session_context
     _t0 = time.time()
 
     def _emit(ev):
